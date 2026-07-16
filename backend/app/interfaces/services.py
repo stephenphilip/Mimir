@@ -110,3 +110,9 @@ class IModelService(ABC):
     def trigger_background_download(self, model_name: str) -> None:
         """Initiate non-blocking download of a model."""
         pass
+
+class IGPUService(ABC):
+    @abstractmethod
+    def detect_hardware(self) -> Dict[str, Any]:
+        """Detect GPU availability, VRAM, and System RAM."""
+        pass

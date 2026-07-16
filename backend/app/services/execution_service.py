@@ -1,6 +1,5 @@
-# Shim for backwards compatibility with the test suite and old references
 from .execution_engine import ExecutionEngine
-from ..executors.python_executor import PythonExecutor
+from ..extensions.python import PythonExecutor
 
 class ExecutionService:
     def __init__(self, workspace_dir="C:/Users/StephenPhilipKallara/Mimir", venv_python=None):

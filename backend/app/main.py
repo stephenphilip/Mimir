@@ -21,7 +21,7 @@ from .services.context_builder import ContextBuilder
 from .services.model_selector import ModelSelector
 from .services.planner import Planner
 from .services.execution_engine import ExecutionEngine
-from .executors.python_executor import PythonExecutor
+from .extensions.python import PythonExecutor
 from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
 from .core.orchestrator import Orchestrator

@@ -1,16 +1,30 @@
 import os
 import uuid
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import List, Optional
 
-from .db import SessionLocal, init_db, Conversation, Message, GeneratedArtifact, Setting, User, Download, InstalledModel
-from .core.orchestrator import Orchestrator
+from .db import SessionLocal, init_db
+from .repositories.sqlite_repositories import (
+    SQLiteConversationRepository,
+    SQLiteMemoryRepository,
+    SQLiteModelRepository,
+    SQLiteArtifactRepository,
+    SQLiteSettingRepository
+)
+from .services.intent_service import IntentService
+from .services.capability_service import CapabilityService
+from .services.memory.memory_service import MemoryService
+from .services.context_builder import ContextBuilder
+from .services.model_selector import ModelSelector
+from .services.planner import Planner
+from .services.execution_engine import ExecutionEngine
+from .executors.python_executor import PythonExecutor
+from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
+from .core.orchestrator import Orchestrator
 
 # Initialize database
 init_db()
@@ -34,21 +48,27 @@ def get_db():
     finally:
         db.close()
 
-orchestrator = Orchestrator()
-model_service = ModelService()
-
 @app.on_event("startup")
 def startup_event():
     db = SessionLocal()
     try:
-        model_service.preload_first_run_models(db)
+        model_repo = SQLiteModelRepository(db)
+        setting_repo = SQLiteSettingRepository(db)
+        ms = ModelService(model_repo, setting_repo)
+        ms.preload_first_run_models()
     finally:
         db.close()
 
 @app.on_event("shutdown")
 def shutdown_event():
-    # Unload all loaded models to free RAM
-    model_service.unload_other_models(None)
+    db = SessionLocal()
+    try:
+        model_repo = SQLiteModelRepository(db)
+        setting_repo = SQLiteSettingRepository(db)
+        ms = ModelService(model_repo, setting_repo)
+        ms.unload_other_models(None)
+    finally:
+        db.close()
 
 # Ensure artifacts directory is ready
 ARTIFACTS_DIR = "C:/Users/StephenPhilipKallara/Mimir/artifacts"
@@ -63,24 +83,69 @@ class SettingsUpdate(BaseModel):
     personality: str
     theme: str
 
+def stream_with_cleanup(generator, db: Session):
+    try:
+        for chunk in generator:
+            yield chunk
+    finally:
+        db.close()
+
 @app.post("/api/chat")
-def chat(req: ChatRequest, db: Session = Depends(get_db)):
+def chat(req: ChatRequest):
     """SSE endpoint streaming intent, capability checks, model loading, chat content, and script execution logs."""
+    db = SessionLocal()
+    # Wire up repositories
+    conv_repo = SQLiteConversationRepository(db)
+    mem_repo = SQLiteMemoryRepository(db)
+    model_repo = SQLiteModelRepository(db)
+    art_repo = SQLiteArtifactRepository(db)
+    setting_repo = SQLiteSettingRepository(db)
+    
+    # Wire up services
+    intent_service = IntentService()
+    capability_service = CapabilityService()
+    memory_service = MemoryService(mem_repo, conv_repo, setting_repo)
+    context_builder = ContextBuilder(memory_service)
+    model_selector = ModelSelector()
+    provider = OllamaProvider()
+    planner = Planner()
+    
+    # Wire up executor & engine
+    python_executor = PythonExecutor(art_repo, setting_repo)
+    execution_engine = ExecutionEngine(art_repo)
+    execution_engine.register_executor(python_executor)
+    
+    # Model service
+    ms = ModelService(model_repo, setting_repo)
+    
+    # Instantiate Orchestrator
+    orchestrator = Orchestrator(
+        intent_service=intent_service,
+        capability_service=capability_service,
+        context_builder=context_builder,
+        model_selector=model_selector,
+        provider=provider,
+        execution_engine=execution_engine,
+        planner=planner,
+        model_service=ms,
+        conversation_repo=conv_repo,
+        model_repo=model_repo
+    )
+    
     # Ensure conversation exists
-    conv = db.query(Conversation).filter(Conversation.id == req.conversation_id).first()
+    conv = conv_repo.get_by_id(req.conversation_id)
     if not conv:
-        conv = Conversation(id=req.conversation_id, title="New Chat", user_id=1)
-        db.add(conv)
-        db.commit()
+        conv_repo.create(req.conversation_id, "New Chat", 1)
 
     return StreamingResponse(
-        orchestrator.process_prompt(db, req.conversation_id, req.prompt),
+        stream_with_cleanup(orchestrator.process_prompt(req.conversation_id, req.prompt), db),
         media_type="text/event-stream"
     )
 
 @app.get("/api/conversations")
 def get_conversations(db: Session = Depends(get_db)):
-    convs = db.query(Conversation).order_by(Conversation.updated_at.desc()).all()
+    conv_repo = SQLiteConversationRepository(db)
+    convs = conv_repo.get_all()
     return [{
         "id": c.id,
         "title": c.title,
@@ -89,28 +154,28 @@ def get_conversations(db: Session = Depends(get_db)):
 
 @app.post("/api/conversations")
 def create_conversation(db: Session = Depends(get_db)):
+    conv_repo = SQLiteConversationRepository(db)
     conv_id = str(uuid.uuid4())
-    conv = Conversation(id=conv_id, title="New Chat", user_id=1)
-    db.add(conv)
-    db.commit()
+    conv_repo.create(conv_id, "New Chat", 1)
     return {"id": conv_id, "title": "New Chat"}
 
 @app.delete("/api/conversations/{conv_id}")
 def delete_conversation(conv_id: str, db: Session = Depends(get_db)):
-    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
-    if not conv:
+    conv_repo = SQLiteConversationRepository(db)
+    deleted = conv_repo.delete(conv_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    db.delete(conv)
-    db.commit()
     return {"status": "success"}
 
 @app.get("/api/conversations/{conv_id}/messages")
 def get_messages(conv_id: str, db: Session = Depends(get_db)):
-    messages = db.query(Message).filter(Message.conversation_id == conv_id).order_by(Message.created_at.asc()).all()
+    conv_repo = SQLiteConversationRepository(db)
+    art_repo = SQLiteArtifactRepository(db)
+    messages = conv_repo.get_messages(conv_id)
     
     result = []
     for msg in messages:
-        artifacts = db.query(GeneratedArtifact).filter(GeneratedArtifact.message_id == msg.id).all()
+        artifacts = art_repo.get_by_message_id(msg.id)
         result.append({
             "id": msg.id,
             "sender": msg.sender,
@@ -128,36 +193,33 @@ def get_messages(conv_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/settings")
 def get_settings(db: Session = Depends(get_db)):
-    settings = db.query(Setting).all()
-    return {s.key: s.value for s in settings}
+    setting_repo = SQLiteSettingRepository(db)
+    return setting_repo.get_all()
 
 @app.post("/api/settings")
 def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
+    setting_repo = SQLiteSettingRepository(db)
     for key, val in settings.dict().items():
-        s = db.query(Setting).filter(Setting.key == key).first()
-        if s:
-            s.value = val
-        else:
-            db.add(Setting(key=key, value=val))
+        setting_repo.save(key, val)
     
     # Also sync user name in User table
-    user = db.query(User).filter(User.id == 1).first()
-    if user:
-        user.name = settings.user_name
+    mem_repo = SQLiteMemoryRepository(db)
+    mem_repo.save_user_name(1, settings.user_name)
 
-    db.commit()
     return {"status": "success"}
 
 @app.get("/api/system/status")
 def get_system_status(db: Session = Depends(get_db)):
     """Fetch hardware performance specifications, active download states, and active model lists."""
-    hw = model_service.detect_hardware()
+    model_repo = SQLiteModelRepository(db)
+    setting_repo = SQLiteSettingRepository(db)
+    ms = ModelService(model_repo, setting_repo)
     
-    # Refresh list of models
-    model_service.sync_models_to_db(db)
+    hw = ms.detect_hardware()
+    ms.sync_models_to_db()
     
-    models = db.query(InstalledModel).all()
-    downloads = db.query(Download).all()
+    models = model_repo.get_all_installed()
+    downloads = model_repo.get_all_downloads()
     
     return {
         "hardware": hw,

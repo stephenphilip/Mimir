@@ -1,0 +1,144 @@
+from abc import ABC, abstractmethod
+from typing import List, Optional, Any, Dict
+
+class IConversationRepository(ABC):
+    @abstractmethod
+    def get_by_id(self, conv_id: str) -> Optional[Any]:
+        """Fetch conversation by ID."""
+        pass
+
+    @abstractmethod
+    def create(self, conv_id: str, title: str, user_id: int) -> Any:
+        """Create a new conversation."""
+        pass
+
+    @abstractmethod
+    def delete(self, conv_id: str) -> bool:
+        """Delete a conversation."""
+        pass
+
+    @abstractmethod
+    def get_all(self) -> List[Any]:
+        """Get all conversations."""
+        pass
+
+    @abstractmethod
+    def update_title(self, conv_id: str, title: str) -> None:
+        """Update conversation title."""
+        pass
+
+    @abstractmethod
+    def get_messages(self, conv_id: str, limit: Optional[int] = None) -> List[Any]:
+        """Get messages for a conversation."""
+        pass
+
+    @abstractmethod
+    def add_message(self, conv_id: str, sender: str, content: str, tokens_count: int = 0) -> Any:
+        """Add message to a conversation."""
+        pass
+
+class IMemoryRepository(ABC):
+    @abstractmethod
+    def get_by_key(self, user_id: int, key: str) -> Optional[Any]:
+        """Get memory by user and key."""
+        pass
+
+    @abstractmethod
+    def get_all_by_user(self, user_id: int) -> List[Any]:
+        """Get all memory records for a user."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, key: str, value: str) -> Any:
+        """Create or update a memory record."""
+        pass
+
+    @abstractmethod
+    def get_user_name(self, user_id: int) -> Optional[str]:
+        """Get user's name by ID."""
+        pass
+
+    @abstractmethod
+    def save_user_name(self, user_id: int, name: str) -> None:
+        """Save user's name by ID."""
+        pass
+
+class IModelRepository(ABC):
+    @abstractmethod
+    def get_by_name(self, name: str) -> Optional[Any]:
+        """Get model configuration by name."""
+        pass
+
+    @abstractmethod
+    def get_all_installed(self) -> List[Any]:
+        """Get all installed models."""
+        pass
+
+    @abstractmethod
+    def save_installed(self, name: str, status: str, size: str, local_path: Optional[str] = None) -> Any:
+        """Save/Update installed model status."""
+        pass
+
+    @abstractmethod
+    def delete_by_name(self, name: str) -> bool:
+        """Delete an installed model entry."""
+        pass
+
+    @abstractmethod
+    def get_download(self, model_name: str) -> Optional[Any]:
+        """Get download details by model name."""
+        pass
+
+    @abstractmethod
+    def get_all_downloads(self) -> List[Any]:
+        """Get all active/completed download tasks."""
+        pass
+
+    @abstractmethod
+    def save_download(self, model_name: str, progress: float, status: str, error: Optional[str] = None) -> Any:
+        """Save/Update download task state."""
+        pass
+
+    @abstractmethod
+    def refresh(self) -> None:
+        """Refresh database state (clear cache)."""
+        pass
+
+class IArtifactRepository(ABC):
+    @abstractmethod
+    def create(self, message_id: Optional[int], file_name: str, file_path: str, file_type: str, file_size: int) -> Any:
+        """Record a generated artifact."""
+        pass
+
+    @abstractmethod
+    def get_by_message_id(self, message_id: int) -> List[Any]:
+        """Get all artifacts linked to a message."""
+        pass
+
+    @abstractmethod
+    def save_execution_history(
+        self,
+        command: str,
+        code_content: str,
+        stdout: Optional[str],
+        stderr: Optional[str],
+        exit_code: Optional[int]
+    ) -> Any:
+        """Save an execution log record."""
+        pass
+
+class ISettingRepository(ABC):
+    @abstractmethod
+    def get_all(self) -> Dict[str, str]:
+        """Get all system settings as a dictionary."""
+        pass
+
+    @abstractmethod
+    def get_by_key(self, key: str) -> Optional[str]:
+        """Get a setting value by key."""
+        pass
+
+    @abstractmethod
+    def save(self, key: str, value: str) -> Any:
+        """Save or update system setting."""
+        pass

@@ -1,6 +1,9 @@
 import re
+from typing import Dict, Any
 
-class IntentService:
+from ..interfaces.services import IIntentService
+
+class IntentService(IIntentService):
     def __init__(self):
         self.rules = {
             "spreadsheet_generation": [
@@ -13,11 +16,14 @@ class IntentService:
             ],
             "code_generation": [
                 r"\bcode\b", r"\bpython\b", r"\bscript\b", r"\bfunction\b", r"\bclass\b", 
-                r"\bprogram\b", r"\balgorithm\b", r"\bwrite code\b", r"\bdevelop\b", r"\bcompile\b"
+                r"\bprogram\b", r"\balgorithm\b", r"\bwrite code\b", r"\bdevelop\b", r"\bcompile\b",
+                r"\bc language\b", r"\bc\+\+\b", r"\bjava\b", r"\bjavascript\b", r"\bprogramming\b",
+                r"\bhtml\b", r"\bcss\b"
             ],
             "translation": [
-                r"\btranslate\b", r"\btranslation\b", r"\blanguage\b", r"\benglish\b", 
-                r"\bspanish\b", r"\bfrench\b", r"\bgerman\b", r"\bjapanese\b", r"\bchinese\b"
+                r"\btranslate\b", r"\btranslation\b", r"\bforeign language\b", r"\btranslate to\b",
+                r"\blanguage translation\b", r"\benglish\b", r"\bspanish\b", r"\bfrench\b",
+                r"\bgerman\b", r"\bjapanese\b", r"\bchinese\b"
             ],
             "writing": [
                 r"\bsummarize\b", r"\bsummary\b", r"\bemail\b", r"\bdraft\b", r"\bwrite\b", 
@@ -25,7 +31,7 @@ class IntentService:
             ]
         }
 
-    def classify(self, prompt: str) -> dict:
+    def classify(self, prompt: str) -> Dict[str, Any]:
         normalized = prompt.strip().lower()
         scores = {intent: 0 for intent in self.rules}
         

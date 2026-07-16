@@ -1,4 +1,8 @@
-class CapabilityService:
+from typing import List, Dict, Any
+
+from ..interfaces.services import ICapabilityService
+
+class CapabilityService(ICapabilityService):
     def __init__(self):
         # Maps intents to required system capabilities
         self.capability_map = {
@@ -10,11 +14,11 @@ class CapabilityService:
             "general_reasoning": ["reasoning"]
         }
 
-    def resolve(self, intent: str) -> list[str]:
+    def resolve(self, intent: str) -> List[str]:
         # Return capabilities required for a given intent
         return self.capability_map.get(intent, ["reasoning"])
 
-    def get_execution_requirements(self, capabilities: list[str]) -> dict:
+    def get_execution_requirements(self, capabilities: List[str]) -> Dict[str, Any]:
         # Determine execution runtime and package requirements
         requirements = {
             "runtime": "python" if "python_execution" in capabilities else None,

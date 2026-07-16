@@ -1,35 +1,22 @@
 import os
 import subprocess
-import shutil
 import threading
 import json
 import psutil
 import requests
-from sqlalchemy.orm import Session
-from ..db import InstalledModel, Download, Setting, SessionLocal
+from typing import List, Dict, Any, Optional
 
-# Map capabilities to standard models
-CAPABILITY_MODELS = {
-    "high": {
-        "reasoning": "qwen2.5-coder:7b",
-        "coding": "qwen2.5-coder:7b",
-        "text_processing": "qwen2.5-coder:7b",
-        "translation": "qwen2.5-coder:7b"
-    },
-    "low": {
-        "reasoning": "llama3.2:1b",
-        "coding": "qwen2.5-coder:1.5b",
-        "text_processing": "llama3.2:1b",
-        "translation": "llama3.2:1b"
-    }
-}
+from ..interfaces.services import IModelService
+from ..interfaces.repositories import IModelRepository, ISettingRepository
 
-class ModelService:
-    def __init__(self, ollama_url="http://localhost:11434"):
+class ModelService(IModelService):
+    def __init__(self, model_repo: IModelRepository, setting_repo: ISettingRepository, ollama_url: str = "http://localhost:11434"):
+        self.model_repo = model_repo
+        self.setting_repo = setting_repo
         self.ollama_url = ollama_url
         self._lock = threading.Lock()
 
-    def detect_hardware(self) -> dict:
+    def detect_hardware(self) -> Dict[str, Any]:
         """Detect GPU availability, VRAM, and System RAM."""
         ram_gb = round(psutil.virtual_memory().total / (1024 ** 3), 2)
         gpu_name = "None"
@@ -88,7 +75,7 @@ class ModelService:
             "category": category
         }
 
-    def get_installed_models_from_ollama(self) -> list[str]:
+    def get_installed_models_from_ollama(self) -> List[str]:
         """Fetch list of models available in Ollama."""
         try:
             resp = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
@@ -99,16 +86,18 @@ class ModelService:
             pass
         return []
 
-    def sync_models_to_db(self, db: Session):
-        """Synchronize Ollama tags with SQLite DB."""
+    def sync_models_to_db(self) -> None:
+        """Synchronize Ollama tags with database."""
         ollama_models = self.get_installed_models_from_ollama()
         
         # Remove models in DB that are no longer in Ollama
-        db.query(InstalledModel).filter(~InstalledModel.name.in_(ollama_models)).delete(synchronize_session=False)
+        for model in self.model_repo.get_all_installed():
+            if model.name not in ollama_models:
+                self.model_repo.delete_by_name(model.name)
         
         # Add missing ones
         for model_name in ollama_models:
-            exists = db.query(InstalledModel).filter(InstalledModel.name == model_name).first()
+            exists = self.model_repo.get_by_name(model_name)
             if not exists:
                 # Get size info
                 try:
@@ -120,33 +109,13 @@ class ModelService:
                 except Exception:
                     size = "Unknown"
 
-                db.add(InstalledModel(
+                self.model_repo.save_installed(
                     name=model_name,
                     status="installed",
                     size=size
-                ))
-        db.commit()
+                )
 
-    def select_best_model(self, capabilities: list[str], db: Session) -> str:
-        """Choose the best model based on required capabilities and hardware spec."""
-        hw = self.detect_hardware()
-        category = hw["category"]
-        
-        # Map required capabilities to candidate models
-        candidates = []
-        for cap in capabilities:
-            model = CAPABILITY_MODELS[category].get(cap, CAPABILITY_MODELS[category]["reasoning"])
-            candidates.append(model)
-            
-        # Select the most comprehensive candidate (normally the first or the coding one if coding is needed)
-        selected_model = candidates[0]
-        if "coding" in capabilities or "python_execution" in capabilities:
-            selected_model = CAPABILITY_MODELS[category]["coding"]
-
-        self.sync_models_to_db(db)
-        return selected_model
-
-    def unload_other_models(self, active_model: str = None):
+    def unload_other_models(self, active_model: Optional[str] = None) -> None:
         """Query Ollama and unload all loaded models except active_model to free VRAM/RAM."""
         try:
             resp = requests.get(f"{self.ollama_url}/api/ps", timeout=5)
@@ -171,10 +140,10 @@ class ModelService:
         except Exception as e:
             print(f"Error unloading other models: {e}")
 
-    def preload_first_run_models(self, db: Session):
+    def preload_first_run_models(self) -> None:
         """Check if any models are in database. If empty, trigger auto-downloads based on hardware."""
-        self.sync_models_to_db(db)
-        installed = db.query(InstalledModel).all()
+        self.sync_models_to_db()
+        installed = self.model_repo.get_all_installed()
         if not installed:
             hw = self.detect_hardware()
             category = hw["category"]
@@ -188,39 +157,38 @@ class ModelService:
             for model in defaults:
                 self.trigger_background_download(model)
 
-    def trigger_background_download(self, model_name: str):
+    def trigger_background_download(self, model_name: str) -> None:
         """Trigger an asynchronous model pull."""
-        db = SessionLocal()
-        try:
-            existing = db.query(Download).filter(Download.model_name == model_name).first()
-            if existing and existing.status in ["downloading", "pending"]:
-                return
-            
-            if not existing:
-                dl = Download(model_name=model_name, progress=0.0, status="pending")
-                db.add(dl)
-            else:
-                existing.status = "pending"
-                existing.progress = 0.0
-                existing.error = None
-            db.commit()
+        existing = self.model_repo.get_download(model_name)
+        if existing and existing.status in ["downloading", "pending"]:
+            return
+        
+        self.model_repo.save_download(
+            model_name=model_name,
+            progress=0.0,
+            status="pending",
+            error=None
+        )
 
-            # Start background thread
-            thread = threading.Thread(target=self._download_worker, args=(model_name,))
-            thread.daemon = True
-            thread.start()
-        finally:
-            db.close()
+        # Start background thread
+        thread = threading.Thread(target=self._download_worker, args=(model_name,))
+        thread.daemon = True
+        thread.start()
 
-    def _download_worker(self, model_name: str):
+    def _download_worker(self, model_name: str) -> None:
         """Worker thread to handle the streaming pull API from Ollama with midway error handling."""
+        from ..db import SessionLocal
+        from ..repositories.sqlite_repositories import SQLiteModelRepository
+        
         db = SessionLocal()
+        thread_model_repo = SQLiteModelRepository(db)
         try:
             # Update status to downloading
-            dl = db.query(Download).filter(Download.model_name == model_name).first()
-            if dl:
-                dl.status = "downloading"
-                db.commit()
+            thread_model_repo.save_download(
+                model_name=model_name,
+                progress=0.0,
+                status="downloading"
+            )
 
             # Call Ollama Pull API with stream=True
             response = requests.post(
@@ -243,11 +211,11 @@ class ModelService:
                 status = data.get("status", "")
                 if status == "success":
                     completed_successfully = True
-                    dl = db.query(Download).filter(Download.model_name == model_name).first()
-                    if dl:
-                        dl.status = "completed"
-                        dl.progress = 100.0
-                        db.commit()
+                    thread_model_repo.save_download(
+                        model_name=model_name,
+                        progress=100.0,
+                        status="completed"
+                    )
                     break
                 
                 if "error" in data:
@@ -257,23 +225,48 @@ class ModelService:
                 completed = data.get("completed", 0)
                 if total > 0:
                     prog = round((completed / total) * 100, 1)
-                    # Throttle DB updates by checking progress change
-                    dl = db.query(Download).filter(Download.model_name == model_name).first()
+                    # Fetch and throttle updates
+                    dl = thread_model_repo.get_download(model_name)
                     if dl and abs(dl.progress - prog) >= 1.0:
-                        dl.progress = prog
-                        db.commit()
+                        thread_model_repo.save_download(
+                            model_name=model_name,
+                            progress=prog,
+                            status="downloading"
+                        )
             
             if not completed_successfully:
                 raise Exception("Download stream closed abruptly before completion.")
             
             # Final check to register in InstalledModel
-            self.sync_models_to_db(db)
+            # Sync inside the thread using the thread's own db session/repo
+            self._sync_models_to_repo(thread_model_repo)
             
         except Exception as e:
-            dl = db.query(Download).filter(Download.model_name == model_name).first()
-            if dl:
-                dl.status = "failed"
-                dl.error = str(e)
-                db.commit()
+            thread_model_repo.save_download(
+                model_name=model_name,
+                progress=0.0,
+                status="failed",
+                error=str(e)
+            )
         finally:
             db.close()
+
+    def _sync_models_to_repo(self, repo: IModelRepository) -> None:
+        """Helper to sync using a specific thread-local repository."""
+        ollama_models = self.get_installed_models_from_ollama()
+        for model in repo.get_all_installed():
+            if model.name not in ollama_models:
+                repo.delete_by_name(model.name)
+        
+        for model_name in ollama_models:
+            exists = repo.get_by_name(model_name)
+            if not exists:
+                try:
+                    resp = requests.post(f"{self.ollama_url}/api/show", json={"name": model_name}, timeout=3)
+                    size = "Unknown"
+                    if resp.status_code == 200:
+                        size = f"{round(resp.json().get('size', 0) / (1024**3), 2)} GB"
+                except Exception:
+                    size = "Unknown"
+
+                repo.save_installed(name=model_name, status="installed", size=size)

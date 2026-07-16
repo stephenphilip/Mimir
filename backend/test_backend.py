@@ -4,6 +4,7 @@ from app.services.intent_service import IntentService
 from app.services.capability_service import CapabilityService
 from app.services.model_service import ModelService
 from app.services.execution_service import ExecutionService
+from app.repositories.sqlite_repositories import SQLiteModelRepository, SQLiteSettingRepository
 
 def run_tests():
     print("--- 1. Testing Database Initialization ---")
@@ -57,8 +58,12 @@ def run_tests():
         print("Capability Test: FAILED")
 
     print("\n--- 4. Testing Hardware Detection ---")
-    model_service = ModelService()
+    db = SessionLocal()
+    model_repo = SQLiteModelRepository(db)
+    setting_repo = SQLiteSettingRepository(db)
+    model_service = ModelService(model_repo, setting_repo)
     hw = model_service.detect_hardware()
+    db.close()
     print("Detected Hardware Specs:")
     print(f"  System RAM: {hw['ram_gb']} GB")
     print(f"  Has GPU: {hw['has_gpu']}")
@@ -98,8 +103,11 @@ print("CSV generated successfully.")
         db.close()
 
     print("\n--- 6. Testing Model Memory Lifecycles & Time Calculations ---")
+    db = SessionLocal()
     try:
-        model_service = ModelService()
+        model_repo = SQLiteModelRepository(db)
+        setting_repo = SQLiteSettingRepository(db)
+        model_service = ModelService(model_repo, setting_repo)
         
         # Test unloading execution safety
         model_service.unload_other_models("non_existent_mock_model")
@@ -132,6 +140,8 @@ print("CSV generated successfully.")
             
     except Exception as e:
         print(f"Model Lifecycle Test: FAILED: {str(e)}")
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     run_tests()

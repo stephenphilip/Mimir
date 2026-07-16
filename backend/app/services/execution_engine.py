@@ -1,15 +1,22 @@
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Callable
 
 from ..interfaces.services import IExecutionEngine
 from ..interfaces.executors import IExecutor
 from ..interfaces.repositories import IArtifactRepository
 from ..core.context import ExecutionContext
 
+
 class ExecutionEngine(IExecutionEngine):
-    def __init__(self, artifact_repo: IArtifactRepository):
+    def __init__(
+        self,
+        artifact_repo: IArtifactRepository,
+        executor_factory: Optional[Callable[[str], Optional[IExecutor]]] = None,
+    ):
         self.artifact_repo = artifact_repo
         self.executors: List[IExecutor] = []
+        # Lazy factory: capability → executor (imports plugin code on first use)
+        self._executor_factory = executor_factory
 
     def register_executor(self, executor: IExecutor) -> None:
         self.executors.append(executor)
@@ -20,30 +27,37 @@ class ExecutionEngine(IExecutionEngine):
         matches = re.findall(pattern, text, re.DOTALL)
         if matches:
             return "\n\n".join(matches)
-        
+
         # Fallback if model didn't use markdown format but returned plain python
         if "import " in text or "print(" in text:
             return text
         return ""
 
+    def _resolve_executor(self, capability: str) -> Optional[IExecutor]:
+        for executor in self.executors:
+            if executor.can_execute(capability):
+                return executor
+
+        if self._executor_factory is not None:
+            executor = self._executor_factory(capability)
+            if executor is not None:
+                self.executors.append(executor)
+                return executor
+        return None
+
     def execute(self, context: ExecutionContext) -> Dict[str, Any]:
-        """Coordinate execution using registered executors based on capabilities."""
+        """Coordinate execution using registered/lazy executors based on capabilities."""
         if "python_execution" not in context.capabilities:
             return {"success": True, "stdout": "No python execution required.", "stderr": "", "exit_code": 0, "artifacts": []}
 
         assistant_response = context.execution_metadata.get("assistant_response", "")
         code = self.extract_python_code(assistant_response)
-        
+
         if not code:
             context.execution_status = "completed"
             return {"success": True, "stdout": "No code block detected for execution.", "stderr": "", "exit_code": 0, "artifacts": []}
 
-        # Find the python executor
-        python_executor = None
-        for executor in self.executors:
-            if executor.can_execute("python_execution"):
-                python_executor = executor
-                break
+        python_executor = self._resolve_executor("python_execution")
 
         if not python_executor:
             err_msg = "PythonExecutor not registered in the ExecutionEngine."

@@ -1,12 +1,16 @@
-import os
 import uuid
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .db import SessionLocal, init_db
+from config.paths import get_paths
+from config.settings import get_settings
+from runtime.runtime_coordinator import get_runtime
+
+from .db import SessionLocal, ensure_db_ready
 from .repositories.sqlite_repositories import (
     SQLiteConversationRepository,
     SQLiteMemoryRepository,
@@ -21,17 +25,15 @@ from .services.context_builder import ContextBuilder
 from .services.model_selector import ModelSelector
 from .services.planner import Planner
 from .services.execution_engine import ExecutionEngine
-from .extensions.python import PythonExecutor
 from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
 from .core.orchestrator import Orchestrator
 
-# Initialize database
-init_db()
+# Architectural decision: do NOT init DB or contact Ollama at import time.
+# Config is imported above (cheap); dirs/DB/plugins load in startup_event.
 
 app = FastAPI(title="AI-Native Personal Assistant Platform")
 
-# CORS middleware config to allow frontend to communicate
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # For local development simplicity
@@ -40,48 +42,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency to get db session
+
 def get_db():
+    ensure_db_ready()
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """
+    Backend has no SPA at /. Point operators to the UI and API docs.
+    The product UI is served by Vite on :5173.
+    """
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mimir API</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #0f1115; color: #e8eaed;
+    }
+    main {
+      width: min(36rem, 92vw); padding: 2rem;
+      border: 1px solid #2a2f3a; border-radius: 12px; background: #161a22;
+    }
+    h1 { margin: 0 0 0.35rem; font-size: 1.6rem; }
+    p { margin: 0 0 1.25rem; color: #9aa3b2; line-height: 1.5; }
+    a {
+      display: inline-block; margin: 0.35rem 0.5rem 0.35rem 0;
+      padding: 0.55rem 0.9rem; border-radius: 8px; text-decoration: none;
+      background: #3b82f6; color: white; font-weight: 600;
+    }
+    a.secondary { background: #2a2f3a; color: #e8eaed; }
+    code { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Mimir API</h1>
+    <p>
+      This is the FastAPI backend. The chat UI is not served from port 8000.
+      Start the frontend (<code>npm run dev</code> in <code>frontend/</code>)
+      or use <code>python run_platform.py</code> from the repo root.
+    </p>
+    <a href="http://localhost:5173">Open Mimir UI</a>
+    <a class="secondary" href="/docs">API Docs (Swagger)</a>
+    <a class="secondary" href="/api/system/status">System Status</a>
+  </main>
+</body>
+</html>"""
+
+
 @app.on_event("startup")
 def startup_event():
+    """
+    Fast startup path:
+    - configuration (already loaded via imports)
+    - ensure directories
+    - DB schema/seed only when needed for local metadata
+    - installed model metadata from SQLite (no Ollama)
+    - plugin manifest metadata (JSON / builtins, no code import)
+    Never downloads or preloads models.
+    """
+    settings = get_settings()
+    runtime = get_runtime()
+
+    # Schema + seed so we can read local installed_models rows
+    ensure_db_ready()
+
     db = SessionLocal()
     try:
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
-        ms = ModelService(model_repo, setting_repo)
-        ms.preload_first_run_models()
+        ms = ModelService(
+            model_repo,
+            setting_repo,
+            ollama_url=settings.ollama_url,
+        )
+        runtime.bind_model_service(ms)
+
+        # Optional legacy preload — disabled by default (feature flag)
+        if settings.enable_startup_model_preload:
+            ms.preload_first_run_models()
+        if settings.enable_startup_ollama_sync:
+            ms.sync_models_to_db()
+
+        runtime.start()
     finally:
         db.close()
+        # Drop request-scoped service; rebound per request that needs Ollama
+        runtime.bind_model_service(None)
+
 
 @app.on_event("shutdown")
 def shutdown_event():
+    """Best-effort idle cleanup. Ollama unload only if a service can be bound."""
+    settings = get_settings()
+    if not settings.enable_idle_model_unload:
+        return
+
+    ensure_db_ready()
     db = SessionLocal()
     try:
+        runtime = get_runtime()
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
-        ms = ModelService(model_repo, setting_repo)
-        ms.unload_other_models(None)
+        ms = ModelService(model_repo, setting_repo, ollama_url=settings.ollama_url)
+        runtime.bind_model_service(ms)
+        runtime.unload_other_models(None)
+    except Exception:
+        pass
     finally:
         db.close()
 
-# Ensure artifacts directory is ready
-ARTIFACTS_DIR = "C:/Users/StephenPhilipKallara/Mimir/artifacts"
-os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
 class ChatRequest(BaseModel):
     conversation_id: str
     prompt: str
 
+
 class SettingsUpdate(BaseModel):
     user_name: str
     personality: str
     theme: str
+
 
 def stream_with_cleanup(generator, db: Session):
     try:
@@ -90,35 +183,51 @@ def stream_with_cleanup(generator, db: Session):
     finally:
         db.close()
 
+
+def _build_runtime_for_request(db: Session):
+    """Bind a request-scoped ModelService to the process-wide RuntimeCoordinator."""
+    settings = get_settings()
+    runtime = get_runtime()
+    model_repo = SQLiteModelRepository(db)
+    setting_repo = SQLiteSettingRepository(db)
+    ms = ModelService(model_repo, setting_repo, ollama_url=settings.ollama_url)
+    runtime.bind_model_service(ms)
+    return runtime, model_repo, setting_repo
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     """SSE endpoint streaming intent, capability checks, model loading, chat content, and script execution logs."""
+    ensure_db_ready()
     db = SessionLocal()
-    # Wire up repositories
+    paths = get_paths()
+
     conv_repo = SQLiteConversationRepository(db)
     mem_repo = SQLiteMemoryRepository(db)
-    model_repo = SQLiteModelRepository(db)
     art_repo = SQLiteArtifactRepository(db)
-    setting_repo = SQLiteSettingRepository(db)
-    
-    # Wire up services
+
+    runtime, model_repo, setting_repo = _build_runtime_for_request(db)
+
     intent_service = IntentService()
     capability_service = CapabilityService()
+    # MemoryService stays inert until ContextBuilder touches it
     memory_service = MemoryService(mem_repo, conv_repo, setting_repo)
     context_builder = ContextBuilder(memory_service)
     model_selector = ModelSelector()
     provider = OllamaProvider()
     planner = Planner()
-    
-    # Wire up executor & engine
-    python_executor = PythonExecutor(art_repo, setting_repo)
-    execution_engine = ExecutionEngine(art_repo)
-    execution_engine.register_executor(python_executor)
-    
-    # Model service
-    ms = ModelService(model_repo, setting_repo)
-    
-    # Instantiate Orchestrator
+
+    # Lazy plugin import: PythonExecutor loaded only when python_execution runs
+    def executor_factory(capability: str):
+        return runtime.get_executor(
+            capability,
+            art_repo,
+            setting_repo,
+            str(paths.workspace_dir),
+        )
+
+    execution_engine = ExecutionEngine(art_repo, executor_factory=executor_factory)
+
     orchestrator = Orchestrator(
         intent_service=intent_service,
         capability_service=capability_service,
@@ -127,12 +236,11 @@ def chat(req: ChatRequest):
         provider=provider,
         execution_engine=execution_engine,
         planner=planner,
-        model_service=ms,
+        runtime=runtime,
         conversation_repo=conv_repo,
-        model_repo=model_repo
+        model_repo=model_repo,
     )
-    
-    # Ensure conversation exists
+
     conv = conv_repo.get_by_id(req.conversation_id)
     if not conv:
         conv_repo.create(req.conversation_id, "New Chat", 1)
@@ -141,6 +249,7 @@ def chat(req: ChatRequest):
         stream_with_cleanup(orchestrator.process_prompt(req.conversation_id, req.prompt), db),
         media_type="text/event-stream"
     )
+
 
 @app.get("/api/conversations")
 def get_conversations(db: Session = Depends(get_db)):
@@ -152,12 +261,14 @@ def get_conversations(db: Session = Depends(get_db)):
         "updated_at": c.updated_at
     } for c in convs]
 
+
 @app.post("/api/conversations")
 def create_conversation(db: Session = Depends(get_db)):
     conv_repo = SQLiteConversationRepository(db)
     conv_id = str(uuid.uuid4())
     conv_repo.create(conv_id, "New Chat", 1)
     return {"id": conv_id, "title": "New Chat"}
+
 
 @app.delete("/api/conversations/{conv_id}")
 def delete_conversation(conv_id: str, db: Session = Depends(get_db)):
@@ -167,12 +278,13 @@ def delete_conversation(conv_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "success"}
 
+
 @app.get("/api/conversations/{conv_id}/messages")
 def get_messages(conv_id: str, db: Session = Depends(get_db)):
     conv_repo = SQLiteConversationRepository(db)
     art_repo = SQLiteArtifactRepository(db)
     messages = conv_repo.get_messages(conv_id)
-    
+
     result = []
     for msg in messages:
         artifacts = art_repo.get_by_message_id(msg.id)
@@ -191,36 +303,37 @@ def get_messages(conv_id: str, db: Session = Depends(get_db)):
         })
     return result
 
+
 @app.get("/api/settings")
-def get_settings(db: Session = Depends(get_db)):
+def get_settings_api(db: Session = Depends(get_db)):
     setting_repo = SQLiteSettingRepository(db)
     return setting_repo.get_all()
+
 
 @app.post("/api/settings")
 def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
     setting_repo = SQLiteSettingRepository(db)
     for key, val in settings.dict().items():
         setting_repo.save(key, val)
-    
-    # Also sync user name in User table
+
     mem_repo = SQLiteMemoryRepository(db)
     mem_repo.save_user_name(1, settings.user_name)
 
     return {"status": "success"}
 
+
 @app.get("/api/system/status")
 def get_system_status(db: Session = Depends(get_db)):
     """Fetch hardware performance specifications, active download states, and active model lists."""
-    model_repo = SQLiteModelRepository(db)
-    setting_repo = SQLiteSettingRepository(db)
-    ms = ModelService(model_repo, setting_repo)
-    
+    runtime, model_repo, _setting_repo = _build_runtime_for_request(db)
+    ms = runtime.model_service
+
     hw = ms.detect_hardware()
     ms.sync_models_to_db()
-    
+
     models = model_repo.get_all_installed()
     downloads = model_repo.get_all_downloads()
-    
+
     return {
         "hardware": hw,
         "installed_models": [{
@@ -236,10 +349,17 @@ def get_system_status(db: Session = Depends(get_db)):
         } for dl in downloads]
     }
 
+
 @app.get("/artifacts/{filename}")
 def get_artifact(filename: str):
     """Serve generated file downloads (Excel sheets, CSVs, charts)."""
-    file_path = os.path.join(ARTIFACTS_DIR, filename)
-    if not os.path.exists(file_path):
+    artifacts_dir = get_paths().artifacts_dir
+    file_path = artifacts_dir / filename
+    # Prevent path traversal
+    try:
+        file_path.resolve().relative_to(artifacts_dir.resolve())
+    except ValueError:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, filename=filename)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(file_path), filename=filename)

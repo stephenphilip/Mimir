@@ -6,12 +6,13 @@ class CapabilityService(ICapabilityService):
     def __init__(self):
         # Maps intents to required system capabilities
         self.capability_map = {
+            "document_generation": ["reasoning", "python_execution", "pdf_generation"],
             "spreadsheet_generation": ["reasoning", "python_execution", "excel_generation"],
             "data_visualization": ["reasoning", "python_execution", "chart_generation"],
-            "code_generation": ["reasoning", "coding"],
+            "code_generation": ["reasoning", "coding", "python_execution"],
             "translation": ["reasoning", "translation"],
             "writing": ["reasoning", "text_processing"],
-            "general_reasoning": ["reasoning"]
+            "general_reasoning": ["reasoning"],
         }
 
     def resolve(self, intent: str) -> List[str]:
@@ -29,6 +30,9 @@ class CapabilityService(ICapabilityService):
             requirements["packages"].extend(["pandas", "openpyxl"])
         if "chart_generation" in capabilities:
             requirements["packages"].extend(["matplotlib", "seaborn", "pandas"])
+        if "pdf_generation" in capabilities:
+            requirements["packages"].extend(["fpdf"])
+
             
         # Deduplicate packages
         requirements["packages"] = list(set(requirements["packages"]))

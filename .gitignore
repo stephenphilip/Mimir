@@ -26,6 +26,8 @@ coverage.xml
 # Databases
 *.db
 *.sqlite3
+backend/data/*
+!backend/data/.gitkeep
 
 # OS files
 .DS_Store

@@ -1,35 +1,52 @@
 import os
-import re
+import sys
 import uuid
 import subprocess
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional, Union
 
 from ..interfaces.executors import IExecutor
 from ..interfaces.repositories import IArtifactRepository, ISettingRepository
 from ..core.context import ExecutionContext
 
 class PythonExecutor(IExecutor):
-    def __init__(self, artifact_repo: IArtifactRepository, setting_repo: ISettingRepository, workspace_dir: str = "C:/Users/StephenPhilipKallara/Mimir"):
+    def __init__(
+        self,
+        artifact_repo: IArtifactRepository,
+        setting_repo: ISettingRepository,
+        workspace_dir: Optional[Union[str, Path]] = None,
+    ):
+        from config.paths import get_paths
+        from config.settings import get_settings
+
+        paths = get_paths()
         self.artifact_repo = artifact_repo
         self.setting_repo = setting_repo
-        self.workspace_dir = workspace_dir
-        self.artifacts_dir = os.path.join(workspace_dir, "artifacts")
+        self.workspace_dir = str(workspace_dir or paths.workspace_dir)
+        self.artifacts_dir = str(paths.artifacts_dir)
+        self._exec_timeout_s = get_settings().python_execution_timeout_s
         os.makedirs(self.artifacts_dir, exist_ok=True)
 
     def can_execute(self, capability: str) -> bool:
         return capability == "python_execution"
 
+    def _resolve_python(self) -> str:
+        """Resolve venv python from settings or project-relative config."""
+        from config.paths import get_paths
+
+        execution_env = self.setting_repo.get_by_key("execution_env")
+        venv_dir = Path(execution_env) if execution_env else get_paths().venv_dir
+        if sys.platform == "win32":
+            candidate = venv_dir / "Scripts" / "python.exe"
+        else:
+            candidate = venv_dir / "bin" / "python"
+        return str(candidate) if candidate.exists() else sys.executable
+
     def execute(self, code: str, context: ExecutionContext) -> Dict[str, Any]:
         if not code.strip():
             return {"success": True, "stdout": "", "stderr": "", "exit_code": 0, "artifacts": []}
 
-        # Resolve python executable from settings
-        execution_env = self.setting_repo.get_by_key("execution_env")
-        if execution_env:
-            venv_python = os.path.join(execution_env, "Scripts", "python.exe") if os.name == 'nt' else os.path.join(execution_env, "bin", "python")
-        else:
-            # Fallback
-            venv_python = "python"
+        venv_python = self._resolve_python()
 
         # Scan folder before run
         files_before = set(os.listdir(self.artifacts_dir))
@@ -53,13 +70,13 @@ class PythonExecutor(IExecutor):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=120  # Limit to 2 minutes
+                timeout=self._exec_timeout_s,
             )
             stdout_content = process.stdout
             stderr_content = process.stderr
             exit_code = process.returncode
         except subprocess.TimeoutExpired:
-            stderr_content = "Execution timed out (limit: 120 seconds)."
+            stderr_content = f"Execution timed out (limit: {self._exec_timeout_s} seconds)."
             exit_code = -1
         except Exception as e:
             stderr_content = f"Execution error: {str(e)}"

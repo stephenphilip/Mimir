@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Generator
+from typing import Generator, Any, Optional, Dict
 
 from .context import ExecutionContext
 from ..interfaces.services import (
@@ -10,10 +10,15 @@ from ..interfaces.services import (
     IModelSelector,
     IExecutionEngine,
     IPlanner,
-    IModelService
 )
 from ..interfaces.providers import IProvider
 from ..interfaces.repositories import IConversationRepository, IModelRepository
+
+
+def _sse(payload: Dict[str, Any]) -> str:
+    """Format a Server-Sent Event data line."""
+    return "data: " + json.dumps(payload) + "\n\n"
+
 
 class Orchestrator:
     def __init__(
@@ -25,9 +30,11 @@ class Orchestrator:
         provider: IProvider,
         execution_engine: IExecutionEngine,
         planner: IPlanner,
-        model_service: IModelService,
+        runtime: Any,
         conversation_repo: IConversationRepository,
-        model_repo: IModelRepository
+        model_repo: IModelRepository,
+        # Backward-compatible alias: older callers may still pass model_service
+        model_service: Optional[Any] = None,
     ):
         self.intent_service = intent_service
         self.capability_service = capability_service
@@ -36,17 +43,29 @@ class Orchestrator:
         self.provider = provider
         self.execution_engine = execution_engine
         self.planner = planner
-        self.model_service = model_service
         self.conversation_repo = conversation_repo
         self.model_repo = model_repo
 
+        if runtime is not None:
+            self.runtime = runtime
+        elif model_service is not None:
+            from runtime.runtime_coordinator import RuntimeCoordinator
+            self.runtime = RuntimeCoordinator(model_service=model_service)
+        else:
+            raise TypeError("Orchestrator requires runtime (or model_service for compatibility)")
+
     def process_prompt(self, conversation_id: str, prompt: str) -> Generator[str, None, None]:
         """Stream orchestration steps as JSON event strings."""
+        from config.settings import get_settings
+
+        settings = get_settings()
+        session_id = self.runtime.begin_session(conversation_id)
+
         try:
             # 1. Initialize ExecutionContext
             context = ExecutionContext(prompt=prompt)
             context.execution_status = "running"
-            
+
             # Load conversation
             conv = self.conversation_repo.get_by_id(conversation_id)
             if conv:
@@ -63,125 +82,135 @@ class Orchestrator:
             context.user = {"id": user_message.conversation.user_id if user_message.conversation else 1}
 
             # 3. Intent Engine
-            yield f"data: {json.dumps({'type': 'status', 'status': 'Detecting intent...'})}\n\n"
+            yield _sse({"type": "status", "status": "Detecting intent..."})
             intent_res = self.intent_service.classify(prompt)
             context.intent = intent_res["intent"]
             context.intent_confidence = intent_res["confidence"]
-            yield f"data: {json.dumps({'type': 'status', 'status': f'Detected intent: {context.intent} (confidence {context.intent_confidence})'})}\n\n"
+            yield _sse({
+                "type": "status",
+                "status": "Detected intent: {} (confidence {})".format(
+                    context.intent, context.intent_confidence
+                ),
+            })
 
             # 4. Capability Engine
-            yield f"data: {json.dumps({'type': 'status', 'status': 'Mapping capabilities...'})}\n\n"
+            yield _sse({"type": "status", "status": "Mapping capabilities..."})
             context.capabilities = self.capability_service.resolve(context.intent)
-            yield f"data: {json.dumps({'type': 'status', 'status': f'Requirements: {', '.join(context.capabilities)}'})}\n\n"
+            yield _sse({
+                "type": "status",
+                "status": "Requirements: {}".format(", ".join(context.capabilities)),
+            })
 
             # 5. Planner
             self.planner.create_plan(context)
 
-            # 6. Context Builder
+            # 6. Context Builder (memory initializes lazily on first use here)
             self.context_builder.build_context(context)
 
-            # 7. Model Selection & Download Verification
-            yield f"data: {json.dumps({'type': 'status', 'status': 'Determining target model...'})}\n\n"
-            self.model_service.sync_models_to_db()
-            
-            # Fetch available models & hardware information
+            # 7. Model Selection — prefer installed models for instant answers
+            yield _sse({"type": "status", "status": "Selecting best available model..."})
+            self.runtime.sync_models_to_db()
+
             installed_models = self.model_repo.get_all_installed()
             available_model_names = [m.name for m in installed_models if m.status == "installed"]
-            hw = self.model_service.detect_hardware()
-            
-            target_model = self.model_selector.select_best_model(context, available_model_names, context.capabilities, hw)
-            context.selected_model = target_model
+            hw = self.runtime.detect_hardware()
+
+            active_model = self.model_selector.select_best_model(
+                context, available_model_names, context.capabilities, hw
+            )
+            context.selected_model = active_model
             context.selected_provider = "ollama"
-            yield f"data: {json.dumps({'type': 'status', 'status': f'Target model: {target_model}'})}\n\n"
 
-            installed = self.model_repo.get_by_name(target_model)
-            active_model = target_model
-            bypassed = False
-            
-            if installed and installed.status == "installed":
-                yield f"data: {json.dumps({'type': 'status', 'status': f'Selected active model: {active_model}'})}\n\n"
+            # Ideal model for this task — pull in background if missing (never block chat)
+            ideal_for_pull = None
+            if hasattr(self.model_selector, "ideal_model_for_download"):
+                ideal_for_pull = self.model_selector.ideal_model_for_download(
+                    context.capabilities, hw, available_model_names
+                )
+
+            if available_model_names:
+                yield _sse({
+                    "type": "status",
+                    "status": "Selected model: {} (ready now)".format(active_model),
+                })
+                if ideal_for_pull and ideal_for_pull != active_model:
+                    yield _sse({
+                        "type": "status",
+                        "status": "Queuing recommended model for later: {}".format(ideal_for_pull),
+                    })
+                    self.runtime.trigger_background_download(ideal_for_pull)
+                    yield _sse({
+                        "type": "download_progress",
+                        "model": ideal_for_pull,
+                        "progress": 0,
+                    })
             else:
-                # Target not installed. Look for fallback
-                ready_installed = [m for m in installed_models if m.status == "installed"]
-                if ready_installed:
-                    fallback_model = ready_installed[0].name
-                    tokens_per_sec = 40.0 if hw["has_gpu"] else 8.0
-                    prompt_tokens = len(prompt) / 4.0
-                    expected_response_tokens = 400.0
-                    
-                    t_exec_fallback = (prompt_tokens + expected_response_tokens) / tokens_per_sec
-                    
-                    def get_model_size_gb(model: str) -> float:
-                        if "7b" in model or "8b" in model:
-                            return 4.7
-                        if "3b" in model:
-                            return 2.0
-                        if "1.5b" in model:
-                            return 0.9
-                        if "1b" in model:
-                            return 1.3
-                        return 2.0
-                    
-                    size_gb = get_model_size_gb(target_model)
-                    download_speed_gbps = 0.005  # 5 MB/s
-                    t_download_target = size_gb / download_speed_gbps
-                    t_exec_target = t_exec_fallback
-                    
-                    t_total_target = t_download_target + t_exec_target
-                    threshold = 0.5 * t_total_target
-                    
-                    if t_exec_fallback < threshold:
-                        bypassed = True
-                        active_model = fallback_model
-                        yield f"data: {json.dumps({
-                            'type': 'status', 
-                            'status': f'Bypassing download of {target_model} (Est. download+run: {int(t_total_target)}s). '
-                                      f'Running on loaded model {fallback_model} (Est. run: {int(t_exec_fallback)}s < 50% threshold {int(threshold)}s).'
-                        })}\n\n"
-                        # Download target model in background
-                        self.model_service.trigger_background_download(target_model)
-                    else:
-                        yield f"data: {json.dumps({'type': 'status', 'status': f'Bypass threshold exceeded. Downloading target model {target_model}...'})}\n\n"
-                        self.model_service.trigger_background_download(target_model)
-                else:
-                    yield f"data: {json.dumps({'type': 'status', 'status': f'No models loaded. Downloading target model {target_model}...'})}\n\n"
-                    self.model_service.trigger_background_download(target_model)
-
-            if not bypassed and active_model == target_model:
+                # Nothing installed — must pull before we can answer
+                yield _sse({
+                    "type": "status",
+                    "status": "No local models found. Downloading {}...".format(active_model),
+                })
+                self.runtime.trigger_background_download(active_model)
                 while True:
-                    # Expire repository session cache to pull fresh records
                     self.model_repo.refresh()
                     inst = self.model_repo.get_by_name(active_model)
                     if inst and inst.status == "installed":
                         break
-                    
+                    # Also accept base-name matches after pull completes
+                    ready = [
+                        m.name for m in self.model_repo.get_all_installed()
+                        if m.status == "installed"
+                    ]
+                    if ready:
+                        active_model = self.model_selector.select_best_model(
+                            context, ready, context.capabilities, hw
+                        )
+                        context.selected_model = active_model
+                        break
+
                     dl = self.model_repo.get_download(active_model)
                     if dl:
                         if dl.status == "downloading":
-                            yield f"data: {json.dumps({'type': 'download_progress', 'model': active_model, 'progress': dl.progress})}\n\n"
+                            yield _sse({
+                                "type": "download_progress",
+                                "model": active_model,
+                                "progress": dl.progress,
+                            })
                         elif dl.status == "failed":
-                            yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to download model {active_model}: {dl.error}'})}\n\n"
+                            yield _sse({
+                                "type": "error",
+                                "message": "Failed to download model {}: {}".format(
+                                    active_model, dl.error
+                                ),
+                            })
                             return
                         elif dl.status == "completed":
                             break
                     else:
-                        self.model_service.trigger_background_download(active_model)
-                    time.sleep(1.0)
+                        self.runtime.trigger_background_download(active_model)
+                    time.sleep(settings.download_poll_interval_s)
 
-            # 8. Unload other models
-            yield f"data: {json.dumps({'type': 'status', 'status': 'Optimizing memory... Unloading other models.'})}\n\n"
-            self.model_service.unload_other_models(active_model)
+            # 8. Prepare runtime (skip cold unload when model already warm)
+            yield _sse({
+                "type": "status",
+                "status": "Preparing runtime for {}...".format(active_model),
+            })
+            self.runtime.prepare_model(active_model)
 
-            # 9. Stream Inference
-            yield f"data: {json.dumps({'type': 'status', 'status': f'Generating response using {active_model}...'})}\n\n"
-            
+            # 9. Stream Inference (scheduled slot; provider still owns generation)
+            yield _sse({
+                "type": "status",
+                "status": "Generating response using {}...".format(active_model),
+            })
+
             system_prompt = context.execution_metadata.get("system_prompt", "")
             user_prompt = context.execution_metadata.get("user_prompt", "")
-            
+
             assistant_content = ""
-            for chunk in self.provider.generate_stream(active_model, user_prompt, system_prompt):
-                assistant_content += chunk
-                yield f"data: {json.dumps({'type': 'content', 'text': chunk})}\n\n"
+            with self.runtime.schedule_inference(active_model):
+                for chunk in self.provider.generate_stream(active_model, user_prompt, system_prompt):
+                    assistant_content += chunk
+                    yield _sse({"type": "content", "text": chunk})
 
             context.execution_metadata["assistant_response"] = assistant_content
 
@@ -193,28 +222,28 @@ class Orchestrator:
             )
             context.execution_metadata["assistant_message_id"] = assistant_message.id
 
-            # 11. Tool Execution Pipeline
+            # 11. Tool Execution Pipeline (plugins import lazily inside the engine)
             if "python_execution" in context.capabilities:
-                yield f"data: {json.dumps({'type': 'status', 'status': 'Executing generated python code...'})}\n\n"
-                
-                # Execute Python code via Engine
-                exec_result = self.execution_engine.execute(context)
-                
-                # Yield results
-                yield f"data: {json.dumps({
-                    'type': 'execution_result',
-                    'success': exec_result['success'],
-                    'stdout': exec_result['stdout'],
-                    'stderr': exec_result['stderr'],
-                    'exit_code': exec_result['exit_code'],
-                    'artifacts': exec_result['artifacts']
-                })}\n\n"
+                yield _sse({"type": "status", "status": "Executing generated python code..."})
 
-            # Update conversation timestamp & title
+                exec_result = self.execution_engine.execute(context)
+                yield _sse({
+                    "type": "execution_result",
+                    "success": exec_result["success"],
+                    "stdout": exec_result["stdout"],
+                    "stderr": exec_result["stderr"],
+                    "exit_code": exec_result["exit_code"],
+                    "artifacts": exec_result["artifacts"],
+                })
+
             new_title = prompt[:30] + "..." if len(prompt) > 30 else prompt
             self.conversation_repo.update_title(conversation_id, new_title)
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
+            yield _sse({"type": "done", "conversation_id": conversation_id})
         except Exception as e:
-            # Yield error event so the UI gets a proper notification and doesn't hang
-            yield f"data: {json.dumps({'type': 'error', 'message': f'Internal Server Error: {str(e)}'})}\n\n"
+            yield _sse({
+                "type": "error",
+                "message": "Internal Server Error: {}".format(str(e)),
+            })
+        finally:
+            self.runtime.end_session(session_id)

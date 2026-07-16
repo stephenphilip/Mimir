@@ -1,267 +1,228 @@
-import React, { useState, useEffect, useRef } from "react";
-import { 
-  MessageSquare, Plus, Trash2, Settings, Cpu, HardDrive, 
-  Download as DlIcon, FileText, CheckCircle, AlertTriangle, 
-  Sparkles, Terminal, Activity, ChevronRight, X
-} from "lucide-react";
-
-interface Conversation {
-  id: string;
-  title: string;
-  updated_at: string;
-}
-
-interface Artifact {
-  id: number;
-  file_name: string;
-  file_path: string;
-  file_type: string;
-  file_size: number;
-}
-
-interface Message {
-  id?: number;
-  sender: "user" | "assistant";
-  content: string;
-  created_at?: string;
-  artifacts?: Artifact[];
-  isStreaming?: boolean;
-  pipelineStatus?: string[];
-  executionResult?: {
-    success: boolean;
-    stdout: string;
-    stderr: string;
-    exit_code: number;
-    artifacts: Artifact[];
-  };
-}
-
-interface HardwareInfo {
-  ram_gb: number;
-  has_gpu: boolean;
-  gpu_name: string;
-  vram_mb: number;
-  category: "high" | "low";
-}
-
-interface InstalledModel {
-  name: string;
-  size: string;
-  status: string;
-}
-
-interface ModelDownload {
-  model_name: string;
-  progress: number;
-  status: string;
-  error?: string;
-}
-
-interface SystemStatus {
-  hardware: HardwareInfo;
-  installed_models: InstalledModel[];
-  downloads: ModelDownload[];
-}
-
-const BACKEND_URL = "http://localhost:8000";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { api } from "./api/client";
+import { CursorGlow } from "./components/CursorGlow";
+import { ChatWindow, type ChatWindowHandle } from "./components/ChatWindow";
+import { ComingSoon } from "./components/ComingSoon";
+import { DownloadTray } from "./components/DownloadTray";
+import { Greeting } from "./components/Greeting";
+import { ModelsView } from "./components/ModelsView";
+import { PromptInput } from "./components/PromptInput";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { Sidebar } from "./components/Sidebar";
+import { StatusBar } from "./components/StatusBar";
+import type {
+  AttachedFile,
+  Conversation,
+  ExecutionResult,
+  Message,
+  NavView,
+  SystemStatus,
+} from "./types";
+import {
+  mergeArtifacts,
+  normalizeArtifact,
+  parseArtifactsFromText,
+  stripDownloadPlaceholders,
+} from "./utils/artifacts";
+import { buildTimeline } from "./utils/timeline";
+import {
+  enrichConversations,
+  loadWorkspace,
+  newId,
+  saveWorkspace,
+  type WorkspaceState,
+} from "./utils/workspace";
 
 export default function App() {
+  const chatRef = useRef<ChatWindowHandle>(null);
+  /** Full prompts (including attachments) for reliable Try again */
+  const promptHistory = useRef<string[]>([]);
+  const [view, setView] = useState<NavView>("home");
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConvId, setActiveConvId] = useState<string>("");
+  const [activeConvId, setActiveConvId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [prompt, setPrompt] = useState<string>("");
-  const [isGenerating, setIsGenerating] = useState<boolean>(false);
-  const [hudOpen, setHudOpen] = useState<boolean>(true);
-  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [prompt, setPrompt] = useState("");
+  const [files, setFiles] = useState<AttachedFile[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-  
-  // Settings Form States
-  const [userName, setUserName] = useState<string>("Stephen");
-  const [personality, setPersonality] = useState<string>("helpful, concise expert data analyst and assistant");
-  const [theme, setTheme] = useState<string>("dark");
+  const [connected, setConnected] = useState(false);
+  const [search, setSearch] = useState("");
+  const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 
-  // Streaming status overlays
-  const [currentPipeline, setCurrentPipeline] = useState<string[]>([]);
-  const [activeDownload, setActiveDownload] = useState<{ model: string; progress: number } | null>(null);
-  const [currentStreamingText, setCurrentStreamingText] = useState<string>("");
-  const [currentExecution, setCurrentExecution] = useState<any | null>(null);
+  const persistWorkspace = (next: WorkspaceState) => {
+    setWorkspace(next);
+    saveWorkspace(next);
+  };
+
+  const displayConversations = useMemo(
+    () => enrichConversations(conversations, workspace),
+    [conversations, workspace]
+  );
+
+  const [userName, setUserName] = useState("User");
+  const [personality, setPersonality] = useState(
+    "helpful, concise expert data analyst and assistant"
+  );
+  const [theme, setTheme] = useState("dark");
+
+  const [pipeline, setPipeline] = useState<string[]>([]);
+  const [streamText, setStreamText] = useState("");
+  const [streamExecution, setStreamExecution] = useState<ExecutionResult | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [liveDownloads, setLiveDownloads] = useState<Record<string, number>>({});
 
-  const chatFeedRef = useRef<HTMLDivElement>(null);
+  const fetchConversations = useCallback(async () => {
+    try {
+      const data = await api.getConversations();
+      setConversations(data);
+      setConnected(true);
+    } catch {
+      setConnected(false);
+    }
+  }, []);
 
-  useEffect(() => {
-    // Initial fetch
-    fetchConversations();
-    fetchSystemStatus();
-    fetchSettings();
-    
-    // Poll system status every 4 seconds to get updates on downloads/hardware
-    const statusInterval = setInterval(fetchSystemStatus, 4000);
-    return () => clearInterval(statusInterval);
+  const fetchMessages = useCallback(async (convId: string) => {
+    try {
+      const data = await api.getMessages(convId);
+      setMessages((prev) => {
+        const normalized = data.map((m) => ({
+          ...m,
+          artifacts: (m.artifacts || []).map((a) => normalizeArtifact(a)),
+        }));
+
+        // Preserve richer client-side artifacts if the DB row lags behind SSE
+        if (prev.length && normalized.length) {
+          const lastPrev = prev[prev.length - 1];
+          const lastNext = normalized[normalized.length - 1];
+          if (
+            lastPrev.sender === "assistant" &&
+            lastNext.sender === "assistant" &&
+            (lastPrev.artifacts?.length || 0) > (lastNext.artifacts?.length || 0)
+          ) {
+            lastNext.artifacts = mergeArtifacts(lastNext.artifacts, lastPrev.artifacts);
+            lastNext.executionResult = lastNext.executionResult || lastPrev.executionResult;
+            if (!lastNext.content && lastPrev.content) {
+              lastNext.content = lastPrev.content;
+            }
+          }
+        }
+        return normalized;
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
+  const fetchSystemStatus = useCallback(async () => {
+    try {
+      const data = await api.getSystemStatus();
+      setSystemStatus(data);
+      setConnected(true);
+      // Drop finished pulls from the live overlay
+      setLiveDownloads((prev) => {
+        const next = { ...prev };
+        for (const d of data.downloads || []) {
+          if (d.status === "completed" || d.progress >= 100) {
+            delete next[d.model_name];
+          }
+        }
+        return next;
+      });
+    } catch {
+      setConnected(false);
+    }
+  }, []);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      const data = await api.getSettings();
+      if (data.user_name) setUserName(data.user_name);
+      if (data.personality) setPersonality(data.personality);
+      if (data.theme) setTheme(data.theme);
+    } catch (err) {
+      console.error(err);
+    }
   }, []);
 
   useEffect(() => {
-    if (activeConvId) {
-      fetchMessages(activeConvId);
-    } else {
-      setMessages([]);
-    }
-  }, [activeConvId]);
+    void fetchConversations();
+    void fetchSystemStatus();
+    void fetchSettings();
+    const id = window.setInterval(() => void fetchSystemStatus(), 5000);
+    return () => window.clearInterval(id);
+  }, [fetchConversations, fetchSystemStatus, fetchSettings]);
 
   useEffect(() => {
-    // Scroll to bottom of chat feed when messages change
-    if (chatFeedRef.current) {
-      chatFeedRef.current.scrollTop = chatFeedRef.current.scrollHeight;
+    if (activeConvId && view === "chats") {
+      void fetchMessages(activeConvId);
     }
-  }, [messages, currentStreamingText, currentPipeline]);
+  }, [activeConvId, view, fetchMessages]);
 
-  const fetchConversations = async () => {
+  const liveTimeline = useMemo(
+    () =>
+      buildTimeline(pipeline, {
+        hasContent: Boolean(streamText),
+        error: Boolean(streamError),
+      }),
+    [pipeline, streamText, streamError]
+  );
+
+  const liveMessage: Message | null = useMemo(() => {
+    if (!isGenerating) return null;
+    const artifacts = mergeArtifacts(
+      streamExecution?.artifacts,
+      parseArtifactsFromText(`${streamText}\n${streamExecution?.stdout || ""}`)
+    );
+    return {
+      sender: "assistant",
+      content: stripDownloadPlaceholders(streamText),
+      artifacts,
+      executionResult: streamExecution || undefined,
+      isStreaming: true,
+    };
+  }, [isGenerating, streamText, streamExecution]);
+
+  const ensureConversation = async (): Promise<string | null> => {
+    if (activeConvId) return activeConvId;
     try {
-      const resp = await fetch(`${BACKEND_URL}/api/conversations`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setConversations(data);
-        if (data.length > 0 && !activeConvId) {
-          setActiveConvId(data[0].id);
-        }
-      }
-    } catch (err) {
-      console.error("Error fetching conversations:", err);
+      const data = await api.createConversation();
+      setConversations((prev) => [data, ...prev]);
+      setActiveConvId(data.id);
+      return data.id;
+    } catch {
+      return null;
     }
   };
 
-  const fetchMessages = async (convId: string) => {
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/conversations/${convId}/messages`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setMessages(data);
-      }
-    } catch (err) {
-      console.error("Error fetching messages:", err);
-    }
-  };
+  const handleSend = async (finalPrompt: string) => {
+    if (!finalPrompt.trim() || isGenerating) return;
 
-  const fetchSystemStatus = async () => {
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/system/status`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setSystemStatus(data);
-        
-        // Update active downloads from the system status
-        const activeDl = data.downloads.find((d: any) => d.status === "downloading" || d.status === "pending");
-        if (activeDl) {
-          setActiveDownload({ model: activeDl.model_name, progress: activeDl.progress });
-        } else {
-          setActiveDownload(null);
-        }
-      }
-    } catch (err) {
-      console.error("Error fetching system status:", err);
-    }
-  };
+    const convId = await ensureConversation();
+    if (!convId) return;
 
-  const fetchSettings = async () => {
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/settings`);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.user_name) setUserName(data.user_name);
-        if (data.personality) setPersonality(data.personality);
-        if (data.theme) setTheme(data.theme);
-      }
-    } catch (err) {
-      console.error("Error fetching settings:", err);
-    }
-  };
-
-  const saveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_name: userName, personality, theme })
-      });
-      if (resp.ok) {
-        setSettingsOpen(false);
-        fetchSystemStatus(); // Refresh status
-      }
-    } catch (err) {
-      console.error("Error saving settings:", err);
-    }
-  };
-
-  const handleCreateChat = async () => {
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/conversations`, { method: "POST" });
-      if (resp.ok) {
-        const data = await resp.json();
-        setConversations(prev => [data, ...prev]);
-        setActiveConvId(data.id);
-      }
-    } catch (err) {
-      console.error("Error creating chat:", err);
-    }
-  };
-
-  const handleDeleteChat = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      const resp = await fetch(`${BACKEND_URL}/api/conversations/${id}`, { method: "DELETE" });
-      if (resp.ok) {
-        setConversations(prev => prev.filter(c => c.id !== id));
-        if (activeConvId === id) {
-          setActiveConvId("");
-        }
-      }
-    } catch (err) {
-      console.error("Error deleting chat:", err);
-    }
-  };
-
-  const handleSend = async () => {
-    if (!prompt.trim() || isGenerating) return;
-    
-    let convId = activeConvId;
-    if (!convId) {
-      // Create new conversation on the fly
-      try {
-        const resp = await fetch(`${BACKEND_URL}/api/conversations`, { method: "POST" });
-        if (resp.ok) {
-          const data = await resp.json();
-          convId = data.id;
-          setActiveConvId(data.id);
-          setConversations(prev => [data, ...prev]);
-        } else {
-          return;
-        }
-      } catch (err) {
-        console.error(err);
-        return;
-      }
-    }
-
-    const userPrompt = prompt;
+    setView("chats");
     setPrompt("");
+    setFiles([]);
     setIsGenerating(true);
     setStreamError(null);
-    setCurrentPipeline([]);
-    setCurrentStreamingText("");
-    setCurrentExecution(null);
+    setPipeline([]);
+    setStreamText("");
+    setStreamExecution(null);
 
-    // Append user message locally immediately
-    setMessages(prev => [...prev, { sender: "user", content: userPrompt }]);
+    const userVisible = finalPrompt.split("\n\n--- Attached file:")[0].trim() || finalPrompt;
+    promptHistory.current = [...promptHistory.current, finalPrompt];
+    setMessages((prev) => [...prev, { sender: "user", content: userVisible }]);
+
+    // Locals avoid stale closures and preserve artifacts across "done"
+    let contentAcc = "";
+    let execAcc: ExecutionResult | null = null;
+    const statusAcc: string[] = [];
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: convId, prompt: userPrompt })
-      });
-
-      if (!response.body) return;
+      const response = await api.chatStream(convId, finalPrompt);
+      if (!response.body) throw new Error("No response stream");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -270,467 +231,348 @@ export default function App() {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith("data: ")) {
-            const jsonStr = trimmed.substring(6);
-            try {
-              const payload = JSON.parse(jsonStr);
-              if (payload.type === "status") {
-                setCurrentPipeline(prev => [...prev, payload.status]);
-              } else if (payload.type === "download_progress") {
-                setActiveDownload({ model: payload.model, progress: payload.progress });
-              } else if (payload.type === "error") {
-                setStreamError(payload.message);
-                setIsGenerating(false);
-                setActiveDownload(null);
-              } else if (payload.type === "content") {
-                // Remove active download overlay once content starts streaming
-                setActiveDownload(null);
-                setCurrentStreamingText(prev => prev + payload.text);
-              } else if (payload.type === "execution_result") {
-                setCurrentExecution({
-                  success: payload.success,
-                  stdout: payload.stdout,
-                  stderr: payload.stderr,
-                  exit_code: payload.exit_code,
-                  artifacts: payload.artifacts
-                });
-              } else if (payload.type === "done") {
-                // Done generating, fetch complete state
-                fetchMessages(convId);
-                fetchConversations();
-                fetchSystemStatus();
-                setIsGenerating(false);
-                setCurrentPipeline([]);
-                setCurrentStreamingText("");
-                setCurrentExecution(null);
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === "status") {
+              statusAcc.push(payload.status);
+              setPipeline([...statusAcc]);
+              const m = String(payload.status).match(/model[:\s]+([^\s.]+)/i);
+              if (m) setActiveModel(m[1]);
+              if (String(payload.status).toLowerCase().includes("generating response using")) {
+                const name = String(payload.status).replace(/^.*using\s+/i, "").replace(/\.\.\.$/, "");
+                if (name) setActiveModel(name);
               }
-            } catch (err) {
-              console.error("Error parsing chunk", err);
+            } else if (payload.type === "download_progress") {
+              statusAcc.push(`Downloading ${payload.model} (${payload.progress}%)`);
+              setPipeline([...statusAcc]);
+              setLiveDownloads((prev) => ({
+                ...prev,
+                [payload.model]: Number(payload.progress) || 0,
+              }));
+            } else if (payload.type === "content") {
+              contentAcc += payload.text;
+              setStreamText(contentAcc);
+            } else if (payload.type === "execution_result") {
+              execAcc = {
+                success: payload.success,
+                stdout: payload.stdout,
+                stderr: payload.stderr,
+                exit_code: payload.exit_code,
+                artifacts: (payload.artifacts || []).map((a: Record<string, unknown>) =>
+                  normalizeArtifact({
+                    id: a.id as number | string | undefined,
+                    file_name: String(a.file_name || ""),
+                    file_path: String(a.file_path || ""),
+                    file_type: String(a.file_type || ""),
+                    file_size: Number(a.file_size || 0),
+                    source: "execution",
+                  })
+                ),
+              };
+              setStreamExecution(execAcc);
+              statusAcc.push(
+                execAcc.artifacts.some((a) => a.file_type === "pdf")
+                  ? "Generating PDF"
+                  : "Running Python"
+              );
+              setPipeline([...statusAcc]);
+            } else if (payload.type === "error") {
+              setStreamError(payload.message);
+              setIsGenerating(false);
+            } else if (payload.type === "done") {
+              const artifacts = mergeArtifacts(
+                execAcc?.artifacts,
+                parseArtifactsFromText(`${contentAcc}\n${execAcc?.stdout || ""}`)
+              );
+              const assistantMessage: Message = {
+                sender: "assistant",
+                content: stripDownloadPlaceholders(contentAcc),
+                artifacts,
+                executionResult: execAcc || undefined,
+                created_at: new Date().toISOString(),
+              };
+
+              // Commit structured message immediately so cards never flash away
+              setMessages((prev) => [...prev, assistantMessage]);
+              setIsGenerating(false);
+              setPipeline([]);
+              setStreamText("");
+              setStreamExecution(null);
+
+              // Reconcile with server (artifacts from DB may include sizes)
+              void fetchMessages(convId);
+              void fetchConversations();
+              void fetchSystemStatus();
             }
+          } catch (err) {
+            console.error("SSE parse error", err);
           }
         }
       }
     } catch (err) {
-      console.error("Error posting message:", err);
+      console.error(err);
+      setStreamError("Failed to reach Mimir backend. Is the API running on :8000?");
       setIsGenerating(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handleRetryMessage = (assistantIndex: number) => {
+    if (isGenerating) return;
+    // Find nearest preceding user message
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+      if (messages[i]?.sender === "user") {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) return;
+
+    const userTurnNumber = messages
+      .slice(0, userIndex + 1)
+      .filter((m) => m.sender === "user").length;
+    const fullPrompt =
+      promptHistory.current[userTurnNumber - 1] || messages[userIndex].content;
+
+    // Remove the user turn + failed reply so handleSend can re-append cleanly
+    setMessages((prev) => prev.slice(0, userIndex));
+    promptHistory.current = promptHistory.current.slice(0, Math.max(0, userTurnNumber - 1));
+    void handleSend(fullPrompt);
+  };
+
+  const handleDeleteChat = async (id: string) => {
+    await api.deleteConversation(id);
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    const next = { ...workspace };
+    next.pinned = next.pinned.filter((x) => x !== id);
+    next.archived = next.archived.filter((x) => x !== id);
+    delete next.projectByChat[id];
+    delete next.titleOverrides[id];
+    persistWorkspace(next);
+    if (activeConvId === id) {
+      setActiveConvId("");
+      setMessages([]);
+      setView("home");
     }
   };
 
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return "0 Bytes";
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  const handlePinChat = (id: string) => {
+    const pinned = workspace.pinned.includes(id)
+      ? workspace.pinned.filter((x) => x !== id)
+      : [id, ...workspace.pinned];
+    persistWorkspace({ ...workspace, pinned });
   };
 
-  const activeConv = conversations.find(c => c.id === activeConvId);
+  const handleArchiveChat = (id: string) => {
+    const archived = workspace.archived.includes(id)
+      ? workspace.archived.filter((x) => x !== id)
+      : [id, ...workspace.archived];
+    const pinned = workspace.pinned.filter((x) => x !== id);
+    persistWorkspace({ ...workspace, archived, pinned });
+    if (activeConvId === id) {
+      setActiveConvId("");
+      setMessages([]);
+    }
+  };
+
+  const handleRenameChat = (id: string) => {
+    const current = displayConversations.find((c) => c.id === id)?.title || "";
+    const title = window.prompt("Rename chat", current);
+    if (title == null) return;
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    persistWorkspace({
+      ...workspace,
+      titleOverrides: { ...workspace.titleOverrides, [id]: trimmed },
+    });
+  };
+
+  const handleShareChat = async (id: string) => {
+    const conv = displayConversations.find((c) => c.id === id);
+    const text = conv?.title || id;
+    try {
+      await navigator.clipboard.writeText(`Mimir chat: ${text}`);
+      window.alert("Chat title copied to clipboard.");
+    } catch {
+      window.alert("Could not copy share text.");
+    }
+  };
+
+  const handleMoveChatToProject = (chatId: string, projectId: string | null) => {
+    const projectByChat = { ...workspace.projectByChat };
+    if (projectId) projectByChat[chatId] = projectId;
+    else delete projectByChat[chatId];
+    persistWorkspace({ ...workspace, projectByChat });
+  };
+
+  const handleCreateProject = () => {
+    const name = window.prompt("Project name", "New project");
+    if (!name?.trim()) return;
+    const project = { id: newId("proj"), name: name.trim() };
+    persistWorkspace({ ...workspace, projects: [...workspace.projects, project] });
+    setActiveProjectId(project.id);
+  };
+
+  const handleRenameProject = (id: string) => {
+    const current = workspace.projects.find((p) => p.id === id)?.name || "";
+    const name = window.prompt("Rename project", current);
+    if (!name?.trim()) return;
+    persistWorkspace({
+      ...workspace,
+      projects: workspace.projects.map((p) =>
+        p.id === id ? { ...p, name: name.trim() } : p
+      ),
+    });
+  };
+
+  const handleStartGroup = () => {
+    window.alert("Group chats are coming soon in a future Mimir update.");
+  };
+
+  const handleCreateChat = async () => {
+    const data = await api.createConversation();
+    if (activeProjectId) {
+      persistWorkspace({
+        ...workspace,
+        projectByChat: { ...workspace.projectByChat, [data.id]: activeProjectId },
+      });
+    }
+    setConversations((prev) => [data, ...prev]);
+    setActiveConvId(data.id);
+    setMessages([]);
+    promptHistory.current = [];
+    setView("chats");
+  };
+
+  const saveSettings = async (e: FormEvent) => {
+    e.preventDefault();
+    await api.saveSettings({ user_name: userName, personality, theme });
+  };
+
+  const showHomeComposer = view === "home";
+  const showChatComposer = view === "chats";
 
   return (
-    <div className="app-container">
-      {/* Sidebar - History */}
-      <aside className="sidebar">
-        <div className="brand-section">
-          <div className="brand-logo">
-            <Sparkles size={18} className="text-white" />
-          </div>
-          <span className="brand-name gradient-text">Mimir</span>
-        </div>
+    <div className={`app-shell theme-${theme}`}>
+      <div className="ambient-glow" aria-hidden="true" />
+      <CursorGlow />
 
-        <button className="new-chat-btn" onClick={handleCreateChat}>
-          <Plus size={16} />
-          New Assistant Chat
-        </button>
+      <DownloadTray
+        downloads={systemStatus?.downloads || []}
+        live={liveDownloads}
+      />
 
-        <div className="history-section">
-          <div className="history-title">Recent Conversations</div>
-          {conversations.map(conv => (
-            <div 
-              key={conv.id} 
-              className={`history-item ${activeConvId === conv.id ? "active" : ""}`}
-              onClick={() => setActiveConvId(conv.id)}
-            >
-              <div className="history-item-title">{conv.title}</div>
-              <button className="delete-chat-btn" onClick={(e) => handleDeleteChat(conv.id, e)}>
-                <Trash2 size={14} />
-              </button>
+      <Sidebar
+        view={view}
+        onNavigate={setView}
+        conversations={displayConversations}
+        activeConvId={activeConvId}
+        onSelectChat={(id) => {
+          setActiveConvId(id);
+          promptHistory.current = [];
+          setView("chats");
+        }}
+        onNewChat={() => void handleCreateChat()}
+        onDeleteChat={(id) => void handleDeleteChat(id)}
+        search={search}
+        onSearchChange={setSearch}
+        projects={workspace.projects}
+        activeProjectId={activeProjectId}
+        onSelectProject={setActiveProjectId}
+        onCreateProject={handleCreateProject}
+        onRenameProject={handleRenameProject}
+        onPinChat={handlePinChat}
+        onArchiveChat={handleArchiveChat}
+        onRenameChat={handleRenameChat}
+        onShareChat={(id) => void handleShareChat(id)}
+        onMoveChatToProject={handleMoveChatToProject}
+        onStartGroup={handleStartGroup}
+      />
+
+      <div className="main-column">
+        <main className={`main-stage ${view === "chats" ? "is-chat" : ""}`}>
+          {view === "home" && (
+            <div className="home-stage">
+              <Greeting
+                userName={userName}
+                onQuickAction={(p) => {
+                  setPrompt(p);
+                  setView("home");
+                }}
+              />
             </div>
-          ))}
-        </div>
-
-        <div className="settings-section">
-          <button className="settings-btn" onClick={() => setSettingsOpen(true)}>
-            <Settings size={18} />
-            Platform Settings
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Chat Feed */}
-      <main className="chat-main">
-        <header className="chat-header">
-          <div className="chat-header-title">
-            {activeConv ? activeConv.title : "Assistant Chat"}
-          </div>
-          <button className="hud-toggle-btn" onClick={() => setHudOpen(!hudOpen)}>
-            <Activity size={16} />
-            {hudOpen ? "Hide System HUD" : "Show System HUD"}
-          </button>
-        </header>
-
-        {/* Chat Messages */}
-        <div className="chat-feed" ref={chatFeedRef}>
-          {messages.length === 0 && !isGenerating ? (
-            <div className="empty-chat">
-              <div className="empty-logo">✨</div>
-              <h1 className="empty-title">Your Local Personal Assistant</h1>
-              <p className="empty-subtitle">
-                Ask me to write reports, organize data lists, generate Excel sheets, or analyze calculations. Everything runs locally on your machine.
-              </p>
-            </div>
-          ) : (
-            <>
-              {messages.map((msg, index) => (
-                <div key={index} className={`message-row ${msg.sender}`}>
-                  <div className="message-bubble">
-                    <div style={{ whiteSpace: "pre-wrap" }}>
-                      {msg.content}
-                    </div>
-                    
-                    {/* Render Code Execution Artifacts if exists */}
-                    {msg.artifacts && msg.artifacts.length > 0 && (
-                      <div className="artifacts-gallery">
-                        {msg.artifacts.map(art => (
-                          <div key={art.id} className="artifact-card glass-panel">
-                            <div className="artifact-info">
-                              <div className="artifact-icon">
-                                <FileText size={18} />
-                              </div>
-                              <div className="artifact-details">
-                                <span className="artifact-name">{art.file_name}</span>
-                                <span className="artifact-meta">
-                                  {art.file_type.toUpperCase()} • {formatSize(art.file_size)}
-                                </span>
-                              </div>
-                            </div>
-                            <a 
-                              href={`${BACKEND_URL}${art.file_path}`} 
-                              download 
-                              className="artifact-action-btn"
-                              target="_blank" 
-                              rel="noreferrer"
-                            >
-                              <DlIcon size={14} />
-                              Download File
-                            </a>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {/* Streaming Assistant Feed */}
-              {isGenerating && (
-                <div className="message-row assistant">
-                  <div className="message-bubble">
-                    {/* Render live pipeline stages */}
-                    {currentPipeline.length > 0 && (
-                      <div style={{ marginBottom: "12px" }}>
-                        {currentPipeline.map((status, i) => (
-                          <div key={i} className="pipeline-status">
-                            {i === currentPipeline.length - 1 && !currentStreamingText ? (
-                              <div className="pipeline-spinner" />
-                            ) : (
-                              <CheckCircle size={12} className="text-emerald-500" />
-                            )}
-                            {status}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Active Download status bar overlay */}
-                    {activeDownload && (
-                      <div className="hud-card" style={{ marginTop: "8px", border: "1px solid var(--color-primary)" }}>
-                        <div className="hud-stat-row">
-                          <span className="hud-stat-label">Model Auto-download: {activeDownload.model}</span>
-                          <span className="hud-stat-value">{activeDownload.progress}%</span>
-                        </div>
-                        <div className="download-progress-bar">
-                          <div className="download-progress-fill" style={{ width: `${activeDownload.progress}%` }} />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Text Stream output */}
-                    <div style={{ whiteSpace: "pre-wrap" }}>
-                      {currentStreamingText}
-                    </div>
-
-                    {/* Live Execution output */}
-                    {currentExecution && (
-                      <div style={{ marginTop: "12px" }}>
-                        <div className="code-header">
-                          <div className="flex items-center gap-2">
-                            <Terminal size={12} />
-                            <span>Python Execution Console</span>
-                          </div>
-                          <span>{currentExecution.success ? "Success" : "Failed (Code: " + currentExecution.exit_code + ")"}</span>
-                        </div>
-                        <pre>
-                          {currentExecution.stdout || currentExecution.stderr || "Success. Generating files..."}
-                        </pre>
-
-                        {currentExecution.artifacts.length > 0 && (
-                          <div style={{ marginTop: "8px" }}>
-                            {currentExecution.artifacts.map((art: any, i: number) => (
-                              <div key={i} className="artifact-card glass-panel">
-                                <div className="artifact-info">
-                                  <div className="artifact-icon">
-                                    <FileText size={18} />
-                                  </div>
-                                  <div className="artifact-details">
-                                    <span className="artifact-name">{art.file_name}</span>
-                                    <span className="artifact-meta">
-                                      {art.file_type.toUpperCase()} • {formatSize(art.file_size)}
-                                    </span>
-                                  </div>
-                                </div>
-                                <a href={`${BACKEND_URL}${art.file_path}`} download className="artifact-action-btn">
-                                  <DlIcon size={14} />
-                                  Download File
-                                </a>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {streamError && (
-                <div className="message-row assistant">
-                  <div className="message-bubble" style={{ borderLeftColor: "#ef4444", background: "rgba(239, 68, 68, 0.05)", borderLeftWidth: "4px" }}>
-                    <div className="pipeline-status" style={{ background: "transparent", borderLeft: "none", color: "#f87171", padding: 0 }}>
-                      <AlertTriangle size={16} style={{ marginRight: "8px" }} />
-                      <span className="font-semibold">System Alert: Prompt Processing Failed</span>
-                    </div>
-                    <div style={{ marginTop: "8px", color: "var(--text-secondary)", fontSize: "0.9rem" }}>
-                      {streamError}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
           )}
-        </div>
 
-        {/* Input Bar */}
-        <div className="chat-input-container">
-          <div className="chat-input-wrapper">
-            <textarea 
-              className="chat-textarea"
-              placeholder="Ask Mimir... (e.g. 'Create an excel expense tracker spreadsheet for this year' or 'Write an email draft')"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={isGenerating}
-              rows={1}
-            />
-            <button 
-              className="send-btn" 
-              onClick={handleSend}
-              disabled={!prompt.trim() || isGenerating}
-            >
-              <ChevronRight size={20} />
-            </button>
-          </div>
-        </div>
-      </main>
-
-      {/* System HUD Panel */}
-      {hudOpen && systemStatus && (
-        <aside className="hud-panel">
-          <div>
-            <h2 className="hud-section-title">
-              <Cpu size={18} className="text-secondary" />
-              Hardware Metrics
-            </h2>
-            <div className="hud-card" style={{ marginTop: "12px" }}>
-              <div className="hud-stat-row">
-                <span className="hud-stat-label">System RAM</span>
-                <span className="hud-stat-value">{systemStatus.hardware.ram_gb} GB</span>
-              </div>
-              <div className="hud-stat-row">
-                <span className="hud-stat-label">GPU Acceleration</span>
-                <span className="hud-stat-value">{systemStatus.hardware.has_gpu ? "Active" : "Disabled (CPU)"}</span>
-              </div>
-              {systemStatus.hardware.has_gpu && (
-                <>
-                  <div className="hud-stat-row">
-                    <span className="hud-stat-label">GPU Device</span>
-                    <span className="hud-stat-value" style={{ maxWidth: "160px", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                      {systemStatus.hardware.gpu_name}
-                    </span>
-                  </div>
-                  <div className="hud-stat-row">
-                    <span className="hud-stat-label">Dedicated VRAM</span>
-                    <span className="hud-stat-value">{systemStatus.hardware.vram_mb} MB</span>
-                  </div>
-                </>
-              )}
-              <div className="hud-stat-row">
-                <span className="hud-stat-label">Power Profile</span>
-                <span className="hud-stat-value" style={{ textTransform: "capitalize" }}>
-                  {systemStatus.hardware.category} Spec
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <h2 className="hud-section-title">
-              <HardDrive size={18} className="text-primary" />
-              AI Capabilities
-            </h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
-              {systemStatus.installed_models.length === 0 ? (
-                <div className="text-xs text-muted" style={{ padding: "8px" }}>
-                  No capabilities deployed. They will install automatically on demand.
+          {view === "chats" && (
+            <div className="chat-stage">
+              {messages.length === 0 && !isGenerating ? (
+                <div className="chat-empty">
+                  <h2>Start a conversation</h2>
+                  <p>Ask Mimir to generate documents, analyze data, or write code.</p>
                 </div>
               ) : (
-                systemStatus.installed_models.map((model, i) => (
-                  <div key={i} className="model-pill">
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <span className="font-semibold">{model.name}</span>
-                      <span className="text-[10px] text-muted">{model.size}</span>
-                    </div>
-                    <span className="text-[10px] uppercase font-bold" style={{ color: "var(--color-secondary)" }}>
-                      Active
-                    </span>
-                  </div>
-                ))
+                <ChatWindow
+                  ref={chatRef}
+                  messages={messages}
+                  liveMessage={liveMessage}
+                  liveTimeline={liveTimeline}
+                  streamError={streamError}
+                  isGenerating={isGenerating}
+                  onRetryMessage={handleRetryMessage}
+                />
               )}
             </div>
-          </div>
-
-          {systemStatus.downloads && systemStatus.downloads.length > 0 && (
-            <div>
-              <h2 className="hud-section-title">
-                <DlIcon size={18} className="text-amber-500" />
-                System Model Pulls
-              </h2>
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
-                {systemStatus.downloads.map((dl, i) => (
-                  <div key={i} className="hud-card" style={{ gap: "6px" }}>
-                    <div className="hud-stat-row" style={{ fontSize: "11px" }}>
-                      <span className="font-semibold" style={{ maxWidth: "140px", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                        {dl.model_name}
-                      </span>
-                      <span className="capitalize font-bold" style={{ 
-                        color: dl.status === "failed" ? "#ef4444" : dl.status === "completed" ? "#10b981" : "var(--color-secondary)",
-                        fontSize: "10px"
-                      }}>
-                        {dl.status}
-                      </span>
-                    </div>
-                    {dl.status === "downloading" && (
-                      <div className="download-progress-bar">
-                        <div className="download-progress-fill" style={{ width: `${dl.progress}%` }} />
-                      </div>
-                    )}
-                    {dl.status === "failed" && dl.error && (
-                      <div style={{ fontSize: "10px", color: "#f87171", marginTop: "4px", lineHeight: "1.4", wordBreak: "break-word" }}>
-                        {dl.error}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
           )}
-        </aside>
-      )}
 
-      {/* Settings Modal */}
-      {settingsOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content glass-panel">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h2 className="modal-header">Platform Settings</h2>
-              <button 
-                style={{ background: "transparent", border: "none", color: "var(--text-secondary)", cursor: "pointer" }}
-                onClick={() => setSettingsOpen(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            
-            <form onSubmit={saveSettings} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              <div className="form-group">
-                <label className="form-label">User Display Name</label>
-                <input 
-                  type="text" 
-                  className="form-input"
-                  value={userName} 
-                  onChange={(e) => setUserName(e.target.value)} 
-                  required
-                />
-              </div>
+          {view === "models" && <ModelsView status={systemStatus} />}
+          {view === "marketplace" && (
+            <ComingSoon
+              title="Marketplace"
+              blurb="Install community skills and extensions without leaving Mimir."
+            />
+          )}
+          {view === "memory" && (
+            <ComingSoon
+              title="Memory"
+              blurb="Long-term preferences and project context will live here."
+            />
+          )}
+          {view === "settings" && (
+            <SettingsPanel
+              userName={userName}
+              personality={personality}
+              theme={theme}
+              onUserName={setUserName}
+              onPersonality={setPersonality}
+              onTheme={setTheme}
+              onSave={(e) => void saveSettings(e)}
+            />
+          )}
+        </main>
 
-              <div className="form-group">
-                <label className="form-label">Assistant Personality Prompt</label>
-                <textarea 
-                  className="form-input" 
-                  style={{ minHeight: "80px", resize: "vertical" }}
-                  value={personality} 
-                  onChange={(e) => setPersonality(e.target.value)} 
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Interface Theme</label>
-                <select 
-                  className="form-input" 
-                  value={theme} 
-                  onChange={(e) => setTheme(e.target.value)}
-                >
-                  <option value="dark">Obsidian Dark Mode</option>
-                  <option value="light">Vanilla Light Mode (Deprecated)</option>
-                </select>
-              </div>
-
-              <div className="modal-actions">
-                <button type="button" className="btn-secondary" onClick={() => setSettingsOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn-primary">
-                  Save Changes
-                </button>
-              </div>
-            </form>
+        {(showHomeComposer || showChatComposer) && (
+          <div className={`composer-dock ${showHomeComposer ? "is-home" : ""}`}>
+            <PromptInput
+              value={prompt}
+              onChange={setPrompt}
+              files={files}
+              onFilesChange={setFiles}
+              onSend={(p) => void handleSend(p)}
+              disabled={isGenerating}
+              compact={showChatComposer}
+            />
           </div>
-        </div>
-      )}
+        )}
+
+        <StatusBar status={systemStatus} currentModel={activeModel} connected={connected} />
+      </div>
     </div>
   );
 }

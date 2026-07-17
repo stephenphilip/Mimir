@@ -160,6 +160,13 @@ export default function App() {
     }
   }, [activeConvId, view, fetchMessages]);
 
+  useEffect(() => {
+    if (view === "home") {
+      setActiveConvId("");
+      setMessages([]);
+    }
+  }, [view]);
+
   const liveTimeline = useMemo(
     () =>
       buildTimeline(pipeline, {

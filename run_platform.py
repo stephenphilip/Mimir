@@ -2,7 +2,210 @@ import os
 import sys
 import subprocess
 import time
+import shutil
+import urllib.request
+import tempfile
+import json
 from pathlib import Path
+
+# ── Ollama helpers ────────────────────────────────────────────────────────────
+
+OLLAMA_API_LATEST = "https://api.github.com/repos/ollama/ollama/releases/latest"
+
+# Direct asset download URLs — GitHub always serves the latest stable here
+OLLAMA_DOWNLOAD = {
+    "win32":  "https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe",
+    "darwin": "https://github.com/ollama/ollama/releases/latest/download/Ollama-darwin.zip",
+    "linux":  None,  # handled via the official install script
+}
+
+
+def _ollama_version() -> str | None:
+    """Return installed Ollama version string, or None if not found."""
+    exe = shutil.which("ollama")
+    if exe is None:
+        # Windows: check the default install location as a fallback
+        if sys.platform == "win32":
+            local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+            if local_app.exists():
+                return "installed"  # version doesn't matter, it exists
+        return None
+    try:
+        result = subprocess.run(
+            ["ollama", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip() or "installed"
+    except Exception:
+        return None
+
+
+def _fetch_latest_version() -> str:
+    """Fetch the latest stable Ollama version tag from GitHub API."""
+    try:
+        req = urllib.request.Request(
+            OLLAMA_API_LATEST,
+            headers={"User-Agent": "Mimir-Platform/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("tag_name", "latest")
+    except Exception:
+        return "latest"
+
+
+def _download_with_progress(url: str, dest: Path) -> None:
+    """Download a file with a simple progress indicator."""
+    def _progress(count, block_size, total):
+        if total > 0:
+            pct = min(int(count * block_size * 100 / total), 100)
+            bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+            print(f"\r  [{bar}] {pct}%", end="", flush=True)
+
+    urllib.request.urlretrieve(url, str(dest), reporthook=_progress)
+    print()  # newline after progress bar
+
+
+def _install_ollama_windows(tmp_dir: Path) -> bool:
+    """Download and silently run the Ollama Windows installer."""
+    installer = tmp_dir / "OllamaSetup.exe"
+    print(f"  Downloading OllamaSetup.exe ...")
+    _download_with_progress(OLLAMA_DOWNLOAD["win32"], installer)
+
+    print("  Running installer (this may take ~30 seconds) ...")
+    result = subprocess.run(
+        [str(installer), "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+        timeout=120,
+    )
+    if result.returncode != 0:
+        print(f"  Error: Installer exited with code {result.returncode}.")
+        return False
+
+    # Refresh PATH so the new ollama.exe is findable in this process
+    local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama"
+    os.environ["PATH"] = str(local_app) + os.pathsep + os.environ.get("PATH", "")
+    return True
+
+
+def _install_ollama_macos(tmp_dir: Path) -> bool:
+    """Download the Ollama macOS zip and place the binary in /usr/local/bin."""
+    zip_path = tmp_dir / "Ollama-darwin.zip"
+    print("  Downloading Ollama for macOS ...")
+    _download_with_progress(OLLAMA_DOWNLOAD["darwin"], zip_path)
+
+    print("  Extracting ...")
+    subprocess.run(["unzip", "-q", str(zip_path), "-d", str(tmp_dir)], check=True)
+
+    # The zip contains Ollama.app; extract the CLI binary from it
+    binary = tmp_dir / "Ollama.app" / "Contents" / "Resources" / "ollama"
+    if not binary.exists():
+        print("  Error: Could not find ollama binary inside zip.")
+        return False
+
+    dest = Path("/usr/local/bin/ollama")
+    try:
+        shutil.copy2(str(binary), str(dest))
+        dest.chmod(0o755)
+    except PermissionError:
+        print("  Retrying with sudo ...")
+        subprocess.run(["sudo", "cp", str(binary), str(dest)], check=True)
+        subprocess.run(["sudo", "chmod", "755", str(dest)], check=True)
+    return True
+
+
+def _install_ollama_linux() -> bool:
+    """Use the official Ollama install script (curl | sh)."""
+    print("  Running official Ollama install script ...")
+    result = subprocess.run(
+        "curl -fsSL https://ollama.com/install.sh | sh",
+        shell=True,
+        timeout=300,
+    )
+    return result.returncode == 0
+
+
+def _wait_for_ollama(timeout_s: int = 30) -> bool:
+    """Poll localhost:11434 until Ollama responds or timeout expires."""
+    url = os.environ.get("MIMIR_OLLAMA_URL", "http://localhost:11434")
+    deadline = time.time() + timeout_s
+    print(f"  Waiting for Ollama to start at {url} ...", end="", flush=True)
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"{url}/api/tags", timeout=2)
+            print(" ready.")
+            return True
+        except Exception:
+            print(".", end="", flush=True)
+            time.sleep(1)
+    print(" timed out.")
+    return False
+
+
+def _start_ollama_service() -> None:
+    """Start the Ollama background server if it isn't already running."""
+    try:
+        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        return  # already running
+    except Exception:
+        pass
+
+    print("  Starting Ollama server ...")
+    if sys.platform == "win32":
+        # Ollama on Windows self-daemonises when invoked without a subcommand
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    else:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def ensure_ollama() -> None:
+    """
+    Check if Ollama is installed and reachable.
+    If not installed, download and install the latest stable version.
+    If installed but not running, start the server.
+    Exits the process on unrecoverable failure.
+    """
+    version = _ollama_version()
+
+    if version:
+        print(f"[Ollama] Found: {version}")
+    else:
+        latest_tag = _fetch_latest_version()
+        print(f"[Ollama] Not found. Installing {latest_tag} ...")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            if sys.platform == "win32":
+                ok = _install_ollama_windows(tmp_dir)
+            elif sys.platform == "darwin":
+                ok = _install_ollama_macos(tmp_dir)
+            else:
+                ok = _install_ollama_linux()
+
+        if not ok:
+            print("\nError: Ollama installation failed.")
+            print("Please install it manually from: https://ollama.com/download")
+            sys.exit(1)
+
+        print("[Ollama] Installation complete.")
+
+    # Ensure the server process is running, then wait for it to be ready
+    _start_ollama_service()
+    if not _wait_for_ollama(timeout_s=30):
+        print("\nError: Ollama installed but server did not respond within 30 seconds.")
+        print("Try running 'ollama serve' manually in another terminal.")
+        sys.exit(1)
 
 
 def resolve_python(root_dir: Path, backend_dir: Path) -> Path:
@@ -71,7 +274,12 @@ def main():
     backend_dir = root_dir / "backend"
     frontend_dir = root_dir / "frontend"
 
+    # ── Step 0: Ensure Ollama is installed and running ────────────────
+    print("\n[0/2] Checking Ollama ...")
+    ensure_ollama()
+
     python_exe = resolve_python(root_dir, backend_dir)
+
     if not python_exe.exists():
         print(f"Error: Virtual environment not found at {python_exe}")
         print("Create one, e.g.: python -m venv venv && venv\\Scripts\\activate")

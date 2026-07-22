@@ -45,6 +45,11 @@ class IMemoryService(ABC):
         """Fetch conversation messages formatted as prompt context."""
         pass
 
+    @abstractmethod
+    def get_shared_project_context(self, project_id: str, current_conv_id: str, limit_per_chat: int = 2) -> List[Dict[str, Any]]:
+        """Fetch recent message pairs from other chats in the same project to act as shared context."""
+        pass
+
 class IContextBuilder(ABC):
     @abstractmethod
     def build_context(self, context: ExecutionContext) -> None:

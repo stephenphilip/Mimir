@@ -5,7 +5,7 @@ import requests
 from typing import List, Dict, Any, Optional
 
 from ..interfaces.services import IModelService, IGPUService
-from ..interfaces.repositories import IModelRepository, ISettingRepository
+from ..interfaces.repositories import IModelRepository, ISettingRepository, IModelCatalogRepository
 from .gpu_service import GPUService
 
 # Process-level hardware cache (nvidia-smi is expensive on every chat)
@@ -14,9 +14,17 @@ _HW_CACHE_AT: float = 0.0
 
 
 class ModelService(IModelService):
-    def __init__(self, model_repo: IModelRepository, setting_repo: ISettingRepository, gpu_service: Optional[IGPUService] = None, ollama_url: str = "http://localhost:11434"):
+    def __init__(
+        self,
+        model_repo: IModelRepository,
+        setting_repo: ISettingRepository,
+        catalog_repo: Optional[IModelCatalogRepository] = None,
+        gpu_service: Optional[IGPUService] = None,
+        ollama_url: str = "http://localhost:11434"
+    ):
         self.model_repo = model_repo
         self.setting_repo = setting_repo
+        self.catalog_repo = catalog_repo
         self.gpu_service = gpu_service or GPUService()
         self.ollama_url = ollama_url
         self._lock = threading.Lock()
@@ -128,13 +136,33 @@ class ModelService(IModelService):
         installed = self.model_repo.get_all_installed()
         if not installed:
             hw = self.detect_hardware()
-            category = hw["category"]
             
-            # Select first run defaults: a general reasoning and a code model
-            if category == "high":
-                defaults = ["qwen2.5-coder:7b", "llama3.2:3b"]
+            # Select first run defaults dynamically
+            if self.catalog_repo:
+                try:
+                    from .model_selector import ModelSelector
+                    from ..core.context import ExecutionContext
+                    from datetime import datetime
+                    
+                    selector = ModelSelector(self.catalog_repo)
+                    ctx = ExecutionContext(
+                        conversation_id="preload-init",
+                        prompt="preload",
+                        capabilities=["reasoning"],
+                        created_at=datetime.utcnow()
+                    )
+                    best_reasoning = selector.select_best_model(ctx, [], ["reasoning"], hw)
+                    best_coding = selector.select_best_model(ctx, [], ["coding"], hw)
+                    defaults = list(set([best_reasoning, best_coding]))
+                except Exception as e:
+                    print(f"Error resolving dynamic preloads: {e}")
+                    defaults = ["llama3.2:1b", "qwen2.5-coder:1.5b"]
             else:
-                defaults = ["llama3.2:1b", "qwen2.5-coder:1.5b"]
+                category = hw["category"]
+                if category == "high":
+                    defaults = ["qwen2.5-coder:7b", "llama3.2:3b"]
+                else:
+                    defaults = ["llama3.2:1b", "qwen2.5-coder:1.5b"]
                 
             for model in defaults:
                 self.trigger_background_download(model)

@@ -76,3 +76,23 @@ class MemoryService(IMemoryService):
         """Fetch conversation messages formatted as prompt context."""
         messages = self.conversation_repo.get_messages(conversation_id, limit=limit)
         return [{"role": m.sender, "content": m.content} for m in messages]
+
+    def get_shared_project_context(self, project_id: str, current_conv_id: str, limit_per_chat: int = 2) -> List[Dict[str, Any]]:
+        """Fetch recent message pairs from other chats in the same project to act as shared context."""
+        other_convs = self.conversation_repo.get_by_project(project_id)
+        shared = []
+        for conv in other_convs:
+            if conv.id == current_conv_id:
+                continue
+            
+            # Fetch user + assistant message pairs
+            messages = self.conversation_repo.get_messages(conv.id, limit=limit_per_chat)
+            if messages:
+                chat_context = []
+                for m in messages:
+                    chat_context.append({"role": m.sender, "content": m.content})
+                shared.append({
+                    "conversation_title": conv.title,
+                    "messages": chat_context
+                })
+        return shared

@@ -58,7 +58,7 @@ def get_settings() -> Settings:
         return int(raw) if raw is not None else default
 
     return Settings(
-        ollama_url=os.environ.get("MIMIR_OLLAMA_URL", "http://localhost:11434"),
+        ollama_url=os.environ.get("MIMIR_OLLAMA_URL", "http://127.0.0.1:11434"),
         ollama_request_timeout_s=_float("MIMIR_OLLAMA_TIMEOUT_S", 5.0),
         ollama_pull_connect_timeout_s=_float("MIMIR_OLLAMA_PULL_TIMEOUT_S", 30.0),
         tokens_per_sec_gpu=_float("MIMIR_TOKENS_PER_SEC_GPU", 40.0),

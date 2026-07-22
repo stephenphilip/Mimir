@@ -7,9 +7,10 @@ from ..interfaces.repositories import (
     IMemoryRepository,
     IModelRepository,
     IArtifactRepository,
-    ISettingRepository
+    ISettingRepository,
+    IModelCatalogRepository
 )
-from ..db import Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact, Setting, User, ExecutionHistory
+from ..db import Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact, Setting, User, ExecutionHistory, ModelCatalog
 
 class SQLiteConversationRepository(IConversationRepository):
     def __init__(self, db: Session):
@@ -18,12 +19,21 @@ class SQLiteConversationRepository(IConversationRepository):
     def get_by_id(self, conv_id: str) -> Optional[Conversation]:
         return self.db.query(Conversation).filter(Conversation.id == conv_id).first()
 
-    def create(self, conv_id: str, title: str, user_id: int) -> Conversation:
-        conv = Conversation(id=conv_id, title=title, user_id=user_id)
+    def create(self, conv_id: str, title: str, user_id: int, project_id: Optional[str] = None) -> Conversation:
+        conv = Conversation(id=conv_id, title=title, user_id=user_id, project_id=project_id)
         self.db.add(conv)
         self.db.commit()
         self.db.refresh(conv)
         return conv
+
+    def update_project(self, conv_id: str, project_id: Optional[str]) -> None:
+        conv = self.get_by_id(conv_id)
+        if conv:
+            conv.project_id = project_id
+            self.db.commit()
+
+    def get_by_project(self, project_id: str) -> List[Conversation]:
+        return self.db.query(Conversation).filter(Conversation.project_id == project_id).all()
 
     def delete(self, conv_id: str) -> bool:
         conv = self.get_by_id(conv_id)
@@ -238,3 +248,80 @@ class SQLiteSettingRepository(ISettingRepository):
             self.db.commit()
             self.db.refresh(s)
             return s
+
+
+class SQLiteModelCatalogRepository(IModelCatalogRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_name(self, name: str) -> Optional[ModelCatalog]:
+        return self.db.query(ModelCatalog).filter(ModelCatalog.name == name).first()
+
+    def get_all_active(self) -> List[ModelCatalog]:
+        return self.db.query(ModelCatalog).filter(ModelCatalog.is_active == 1).all()
+
+    def save_master_model(
+        self,
+        name: str,
+        base_name: str,
+        parameter_size: float,
+        file_size_gb: float,
+        required_ram_gb: float,
+        required_vram_gb: float,
+        total_layers: int,
+        score_reasoning: float,
+        score_coding: float,
+        score_math: float,
+        score_conversational: float,
+        tps_cpu: float,
+        tps_gpu: float,
+        is_active: int = 1
+    ) -> ModelCatalog:
+        existing = self.get_by_name(name)
+        if existing:
+            existing.base_name = base_name
+            existing.parameter_size = parameter_size
+            existing.file_size_gb = file_size_gb
+            existing.required_ram_gb = required_ram_gb
+            existing.required_vram_gb = required_vram_gb
+            existing.total_layers = total_layers
+            existing.score_reasoning = score_reasoning
+            existing.score_coding = score_coding
+            existing.score_math = score_math
+            existing.score_conversational = score_conversational
+            existing.tps_cpu = tps_cpu
+            existing.tps_gpu = tps_gpu
+            existing.is_active = is_active
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+        else:
+            model = ModelCatalog(
+                name=name,
+                base_name=base_name,
+                parameter_size=parameter_size,
+                file_size_gb=file_size_gb,
+                required_ram_gb=required_ram_gb,
+                required_vram_gb=required_vram_gb,
+                total_layers=total_layers,
+                score_reasoning=score_reasoning,
+                score_coding=score_coding,
+                score_math=score_math,
+                score_conversational=score_conversational,
+                tps_cpu=tps_cpu,
+                tps_gpu=tps_gpu,
+                is_active=is_active
+            )
+            self.db.add(model)
+            self.db.commit()
+            self.db.refresh(model)
+            return model
+
+    def delete_by_name(self, name: str) -> bool:
+        model = self.get_by_name(name)
+        if model:
+            model.is_active = 0
+            self.db.commit()
+            return True
+        return False
+

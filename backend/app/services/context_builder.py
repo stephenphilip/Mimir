@@ -35,6 +35,11 @@ class ContextBuilder(IContextBuilder):
             "when the user changed the subject.\n"
             "- If the latest question is unrelated to previous messages, ignore the old topic completely.\n"
             "- Be direct and helpful. Prefer action (code/files) over declining when tools are available.\n"
+            "- STRICT ENTITY PRESERVATION: Identify all character names, subjects, and key nouns "
+            "in the user's request (e.g. 'tortoise', 'rabbit'). You MUST preserve these exact names "
+            "throughout your response text, stories, and code. Do NOT substitute or blend them with "
+            "synonyms or other fables (e.g. do NOT change 'tortoise' to 'hare' or 'turtle', do NOT change "
+            "'rabbit' to 'hare').\n"
         )
 
         if formatted_memories:
@@ -43,16 +48,19 @@ class ContextBuilder(IContextBuilder):
 
         if "python_execution" in context.capabilities:
             system_prompt += (
-                "\nIMPORTANT: To solve spreadsheet, csv, charts, pdf, document, workout plan, or math tasks, "
-                "you MUST write executable Python code inside a ```python ... ``` code block. "
-                "For PDFs use the fpdf library (from fpdf import FPDF). "
-                "For Excel use pandas/openpyxl. For charts use matplotlib. "
-                "All files MUST be saved to the current working directory with real filenames "
-                "(e.g. leg_day_workout.pdf, expense_tracker.xlsx). "
-                "Do NOT refuse to generate PDFs or documents — create them with code. "
-                "Print a short success message listing the exact filenames created. "
-                "NEVER write fake placeholders such as [Download PDF] — the UI shows download cards automatically. "
-                "Keep commentary brief; prioritize correct working code."
+                "\nIMPORTANT PROTOCOL FOR CREATING DOCUMENTS/SPREADSHEETS/FILES:\n"
+                "If the user asks you to create a file (such as a PDF, Excel sheet, Word doc, chart, etc.):\n"
+                "1. PLAN FIRST: Write a brief, numbered task list of the steps you will take "
+                "(e.g., '1. Draft the story text. 2. Write the PDF formatting code. 3. Compile and save the PDF.').\n"
+                "2. CREATE CONTENT: Write out the full drafted content (e.g., the complete story, table data, or outline) "
+                "directly in your response text so the user can read it first.\n"
+                "3. COMPILE CODE: Write the complete, executable Python code block (wrapped in ```python ... ```) "
+                "that embeds the entire content (no placeholders, no truncated text) and saves the file to the current "
+                "working directory. Use fpdf2 for PDFs (from fpdf import FPDF), openpyxl/pandas for Excel/CSVs, "
+                "python-docx for Word files, and matplotlib for charts.\n"
+                "4. CONFIRM SUCCESS: Print a short confirmation message stating the exact filename created.\n"
+                "Always generate the full content inside both the message text and the code block. Never use placeholders "
+                "like '# add rest of story here' or '[Download PDF]'."
             )
 
         context.execution_metadata["system_prompt"] = system_prompt
@@ -75,7 +83,30 @@ class ContextBuilder(IContextBuilder):
         else:
             recent_messages = []
 
-        full_user_prompt = (
+        shared_project_context = ""
+        project_id = context.conversation.get("project_id") if context.conversation else None
+        if project_id and conv_id:
+            try:
+                shared = self.memory_service.get_shared_project_context(project_id, conv_id, limit_per_chat=2)
+                if shared:
+                    shared_project_context += "=== SHARED PROJECT KNOWLEDGE (from other chats in this project) ===\n"
+                    for chat in shared:
+                        shared_project_context += f"Chat: \"{chat['conversation_title']}\"\n"
+                        for m in chat["messages"]:
+                            role = "User" if m["role"] == "user" else "Assistant"
+                            content = (m["content"] or "").strip()
+                            if len(content) > 500:
+                                content = content[:500] + "..."
+                            shared_project_context += f"  {role}: {content}\n"
+                    shared_project_context += "===================================================================\n\n"
+            except Exception as e:
+                print(f"Error fetching shared project context: {e}")
+
+        full_user_prompt = ""
+        if shared_project_context:
+            full_user_prompt += shared_project_context
+
+        full_user_prompt += (
             "Conversation so far (for context only).\n"
             "Respond ONLY to the final user message below.\n\n"
         )

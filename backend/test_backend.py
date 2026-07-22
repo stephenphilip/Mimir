@@ -105,9 +105,11 @@ print("CSV generated successfully.")
     print("\n--- 6. Testing Model Memory Lifecycles & Time Calculations ---")
     db = SessionLocal()
     try:
+        from app.repositories.sqlite_repositories import SQLiteModelCatalogRepository
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
-        model_service = ModelService(model_repo, setting_repo)
+        catalog_repo = SQLiteModelCatalogRepository(db)
+        model_service = ModelService(model_repo, setting_repo, catalog_repo=catalog_repo)
         
         # Test unloading execution safety
         model_service.unload_other_models("non_existent_mock_model")

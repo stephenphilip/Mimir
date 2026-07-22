@@ -29,6 +29,7 @@ class Conversation(Base):
     id = Column(String, primary_key=True, index=True)
     title = Column(String, default="New Conversation")
     user_id = Column(Integer, ForeignKey("users.id"))
+    project_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -73,6 +74,27 @@ class InstalledModel(Base):
     size = Column(String)
     local_path = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelCatalog(Base):
+    __tablename__ = "model_catalog"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    base_name = Column(String)
+    parameter_size = Column(Float)
+    file_size_gb = Column(Float)
+    context_limit = Column(Integer, default=8192)
+    required_ram_gb = Column(Float)
+    required_vram_gb = Column(Float)
+    total_layers = Column(Integer, default=32)
+    score_reasoning = Column(Float)
+    score_coding = Column(Float)
+    score_math = Column(Float)
+    score_conversational = Column(Float)
+    tps_cpu = Column(Float)
+    tps_gpu = Column(Float)
+    is_active = Column(Integer, default=1)
+    release_date = Column(DateTime, default=datetime.utcnow)
 
 
 class Setting(Base):
@@ -197,6 +219,115 @@ def init_db() -> None:
         for k, v in defaults.items():
             if not db.query(Setting).filter(Setting.key == k).first():
                 db.add(Setting(key=k, value=v))
+
+        # Seed Model Catalog
+        if not db.query(ModelCatalog).first():
+            catalog_seeds = [
+                ModelCatalog(
+                    name="llama3.2:1b",
+                    base_name="llama3.2",
+                    parameter_size=1.3,
+                    file_size_gb=1.3,
+                    context_limit=8192,
+                    required_ram_gb=4.0,
+                    required_vram_gb=2.0,
+                    total_layers=28,
+                    score_reasoning=55.0,
+                    score_coding=35.0,
+                    score_math=40.0,
+                    score_conversational=60.0,
+                    tps_cpu=12.0,
+                    tps_gpu=50.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="llama3.2:3b",
+                    base_name="llama3.2",
+                    parameter_size=3.2,
+                    file_size_gb=2.0,
+                    context_limit=8192,
+                    required_ram_gb=6.0,
+                    required_vram_gb=3.2,
+                    total_layers=28,
+                    score_reasoning=65.0,
+                    score_coding=50.0,
+                    score_math=55.0,
+                    score_conversational=70.0,
+                    tps_cpu=8.5,
+                    tps_gpu=38.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="qwen2.5-coder:1.5b",
+                    base_name="qwen2.5-coder",
+                    parameter_size=1.5,
+                    file_size_gb=1.6,
+                    context_limit=32768,
+                    required_ram_gb=4.0,
+                    required_vram_gb=2.2,
+                    total_layers=28,
+                    score_reasoning=60.0,
+                    score_coding=68.0,
+                    score_math=62.0,
+                    score_conversational=65.0,
+                    tps_cpu=10.0,
+                    tps_gpu=42.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="qwen2.5-coder:7b",
+                    base_name="qwen2.5-coder",
+                    parameter_size=7.2,
+                    file_size_gb=4.7,
+                    context_limit=32768,
+                    required_ram_gb=16.0,
+                    required_vram_gb=8.0,
+                    total_layers=28,
+                    score_reasoning=80.0,
+                    score_coding=85.0,
+                    score_math=82.0,
+                    score_conversational=80.0,
+                    tps_cpu=4.0,
+                    tps_gpu=25.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="gemma2:2b",
+                    base_name="gemma2",
+                    parameter_size=2.6,
+                    file_size_gb=1.6,
+                    context_limit=8192,
+                    required_ram_gb=6.0,
+                    required_vram_gb=3.0,
+                    total_layers=26,
+                    score_reasoning=63.0,
+                    score_coding=45.0,
+                    score_math=52.0,
+                    score_conversational=68.0,
+                    tps_cpu=8.0,
+                    tps_gpu=35.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="mistral:7b",
+                    base_name="mistral",
+                    parameter_size=7.2,
+                    file_size_gb=4.1,
+                    context_limit=32768,
+                    required_ram_gb=16.0,
+                    required_vram_gb=8.0,
+                    total_layers=32,
+                    score_reasoning=72.0,
+                    score_coding=55.0,
+                    score_math=68.0,
+                    score_conversational=75.0,
+                    tps_cpu=3.5,
+                    tps_gpu=22.0,
+                    is_active=1
+                )
+            ]
+            db.bulk_save_objects(catalog_seeds)
+
         db.commit()
     finally:
         db.close()

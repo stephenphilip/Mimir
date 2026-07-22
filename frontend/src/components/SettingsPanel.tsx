@@ -8,6 +8,7 @@ interface Props {
   onPersonality: (v: string) => void;
   onTheme: (v: string) => void;
   onSave: (e: FormEvent) => void;
+  saved?: boolean;
 }
 
 export function SettingsPanel({
@@ -18,6 +19,7 @@ export function SettingsPanel({
   onPersonality,
   onTheme,
   onSave,
+  saved,
 }: Props) {
   return (
     <section className="panel-page" aria-labelledby="settings-title">
@@ -50,10 +52,15 @@ export function SettingsPanel({
           </select>
         </label>
 
-        <div className="form-actions">
+        <div className="form-actions" style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <button type="submit" className="btn-primary">
             Save changes
           </button>
+          {saved && (
+            <span className="settings-saved-indicator" style={{ color: "var(--ok)", fontSize: "13px", fontWeight: 500 }}>
+              ✓ Settings saved!
+            </span>
+          )}
         </div>
       </form>
     </section>

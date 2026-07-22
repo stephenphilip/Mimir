@@ -1,9 +1,7 @@
+import { useState } from "react";
 import {
-  Home,
   MessageSquare,
-  Box,
   Store,
-  Brain,
   Settings,
   Plus,
   Search,
@@ -11,6 +9,7 @@ import {
   Sparkles,
   Folder,
   Pencil,
+  ChevronDown,
 } from "lucide-react";
 import type { Conversation, NavView } from "../types";
 import type { Project } from "../utils/workspace";
@@ -39,15 +38,6 @@ interface Props {
   onStartGroup: (id: string) => void;
 }
 
-const NAV: { id: NavView; label: string; icon: typeof Home; soon?: boolean }[] = [
-  { id: "home", label: "Home", icon: Home },
-  { id: "chats", label: "Chats", icon: MessageSquare },
-  { id: "models", label: "Models", icon: Box },
-  { id: "marketplace", label: "Marketplace", icon: Store, soon: true },
-  { id: "memory", label: "Memory", icon: Brain, soon: true },
-  { id: "settings", label: "Settings", icon: Settings },
-];
-
 export function Sidebar({
   view,
   onNavigate,
@@ -70,17 +60,20 @@ export function Sidebar({
   onMoveChatToProject,
   onStartGroup,
 }: Props) {
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const q = search.trim().toLowerCase();
+  
   const visible = conversations.filter((c) => !c.archived);
   const pinned = visible.filter((c) => c.pinned);
-  const inProject = (c: Conversation) =>
-    activeProjectId ? c.project_id === activeProjectId : !c.project_id || !activeProjectId;
-  // When a project is selected, show its chats; otherwise show chats not filtered by project for recent
-  const recentBase = activeProjectId
-    ? visible.filter((c) => c.project_id === activeProjectId && !c.pinned)
-    : visible.filter((c) => !c.pinned);
+  
   const filter = (list: Conversation[]) =>
     q ? list.filter((c) => c.title.toLowerCase().includes(q)) : list;
+
+  const toggleProject = (id: string) => {
+    setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const directChats = visible.filter((c) => !c.project_id);
 
   return (
     <aside className="sidebar" aria-label="Primary">
@@ -95,33 +88,37 @@ export function Sidebar({
       </div>
 
       <nav className="side-nav" aria-label="Sections">
-        {NAV.map((item) => {
-          const Icon = item.icon;
-          const active = view === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={`side-nav-item ${active ? "is-active" : ""}`}
-              onClick={() => onNavigate(item.id)}
-              aria-current={active ? "page" : undefined}
-            >
-              <Icon size={16} aria-hidden="true" />
-              <span>{item.label}</span>
-              {item.soon && <span className="soon-pill">Soon</span>}
-            </button>
-          );
-        })}
+        <button
+          type="button"
+          className={`side-nav-item ${view === "chats" ? "is-active" : ""}`}
+          onClick={() => {
+            onSelectProject(null);
+            onNavigate("chats");
+          }}
+          aria-current={view === "chats" ? "page" : undefined}
+        >
+          <MessageSquare size={16} aria-hidden="true" />
+          <span>Chats</span>
+        </button>
+        <button
+          type="button"
+          className={`side-nav-item ${view === "marketplace" ? "is-active" : ""}`}
+          onClick={() => onNavigate("marketplace")}
+          aria-current={view === "marketplace" ? "page" : undefined}
+        >
+          <Store size={16} aria-hidden="true" />
+          <span>Plugins</span>
+        </button>
       </nav>
 
-      <div className="side-chats">
-        <div className="side-chats-head">
-          <span>Workspace</span>
-          <button type="button" className="icon-btn" onClick={onNewChat} aria-label="New chat" title="New chat">
-            <Plus size={15} />
-          </button>
-        </div>
+      <div className="btn-new-chat-wrap">
+        <button type="button" className="btn-new-chat" onClick={onNewChat}>
+          <Plus size={16} />
+          <span>New Chat</span>
+        </button>
+      </div>
 
+      <div className="side-chats">
         <label className="side-search">
           <Search size={14} aria-hidden="true" />
           <input
@@ -175,43 +172,77 @@ export function Sidebar({
             </button>
           </div>
 
-          <button
-            type="button"
-            className={`project-row ${activeProjectId === null ? "is-active" : ""}`}
-            onClick={() => onSelectProject(null)}
-          >
-            <Folder size={14} />
-            <span>All chats</span>
-          </button>
-
-          {projects.map((p) => (
-            <div key={p.id} className={`project-row-wrap ${activeProjectId === p.id ? "is-active" : ""}`}>
-              <button type="button" className="project-row" onClick={() => onSelectProject(p.id)}>
-                <Folder size={14} />
-                <span>{p.name}</span>
-              </button>
-              <button
-                type="button"
-                className="icon-btn project-edit"
-                aria-label={`Rename ${p.name}`}
-                onClick={() => onRenameProject(p.id)}
-              >
-                <Pencil size={12} />
-              </button>
-            </div>
-          ))}
+          <div className="projects-container">
+            {projects.map((p) => {
+              const projectChats = visible.filter((c) => c.project_id === p.id);
+              const isCollapsed = collapsedProjects[p.id];
+              const isSelected = activeProjectId === p.id;
+              return (
+                <div key={p.id} className={`project-group-wrap ${isSelected ? "is-selected" : ""}`}>
+                  <div className="project-group-header">
+                    <button
+                      type="button"
+                      className="project-group-toggle"
+                      onClick={() => {
+                        onSelectProject(p.id);
+                        toggleProject(p.id);
+                      }}
+                    >
+                      <ChevronDown
+                        size={12}
+                        className={`caret-icon ${isCollapsed ? "is-collapsed" : ""}`}
+                      />
+                      <Folder size={13} />
+                      <span className="project-name">{p.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn project-edit"
+                      aria-label={`Rename ${p.name}`}
+                      onClick={() => onRenameProject(p.id)}
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  </div>
+                  {!isCollapsed && (
+                    <div className="project-group-chats">
+                      {filter(projectChats).length === 0 ? (
+                        <p className="side-empty-project">No chats in project</p>
+                      ) : (
+                        filter(projectChats).map((c) => (
+                          <ChatRow
+                            key={c.id}
+                            conv={c}
+                            projects={projects}
+                            active={activeConvId === c.id}
+                            onSelect={() => {
+                              onSelectChat(c.id);
+                              onNavigate("chats");
+                            }}
+                            onDelete={() => onDeleteChat(c.id)}
+                            onPin={() => onPinChat(c.id)}
+                            onArchive={() => onArchiveChat(c.id)}
+                            onRename={() => onRenameChat(c.id)}
+                            onShare={() => onShareChat(c.id)}
+                            onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
+                            onStartGroup={() => onStartGroup(c.id)}
+                          />
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="chat-group">
-          <div className="chat-group-title">
-            {activeProjectId
-              ? projects.find((p) => p.id === activeProjectId)?.name || "Chats"
-              : "Chats"}
-          </div>
-          {filter(recentBase).length === 0 ? (
-            <p className="side-empty">No chats yet</p>
+          <div className="chat-group-title">Direct Chats</div>
+          {filter(directChats).length === 0 ? (
+            <p className="side-empty">No direct chats</p>
           ) : (
-            filter(recentBase).filter(inProject).map((c) => (
+            filter(directChats).map((c) => (
               <ChatRow
                 key={c.id}
                 conv={c}
@@ -232,6 +263,17 @@ export function Sidebar({
             ))
           )}
         </div>
+      </div>
+
+      <div className="sidebar-bottom">
+        <button
+          type="button"
+          className={`side-nav-item bottom-settings ${view === "settings" ? "is-active" : ""}`}
+          onClick={() => onNavigate("settings")}
+        >
+          <Settings size={16} />
+          <span>Settings</span>
+        </button>
       </div>
     </aside>
   );

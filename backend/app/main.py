@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional, Generator
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,8 @@ from .repositories.sqlite_repositories import (
     SQLiteMemoryRepository,
     SQLiteModelRepository,
     SQLiteArtifactRepository,
-    SQLiteSettingRepository
+    SQLiteSettingRepository,
+    SQLiteModelCatalogRepository
 )
 from .services.intent_service import IntentService
 from .services.capability_service import CapabilityService
@@ -123,9 +125,11 @@ def startup_event():
     try:
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
+        catalog_repo = SQLiteModelCatalogRepository(db)
         ms = ModelService(
             model_repo,
             setting_repo,
+            catalog_repo=catalog_repo,
             ollama_url=settings.ollama_url,
         )
         runtime.bind_model_service(ms)
@@ -190,9 +194,10 @@ def _build_runtime_for_request(db: Session):
     runtime = get_runtime()
     model_repo = SQLiteModelRepository(db)
     setting_repo = SQLiteSettingRepository(db)
-    ms = ModelService(model_repo, setting_repo, ollama_url=settings.ollama_url)
+    catalog_repo = SQLiteModelCatalogRepository(db)
+    ms = ModelService(model_repo, setting_repo, catalog_repo=catalog_repo, ollama_url=settings.ollama_url)
     runtime.bind_model_service(ms)
-    return runtime, model_repo, setting_repo
+    return runtime, model_repo, setting_repo, catalog_repo
 
 
 @app.post("/api/chat")
@@ -206,14 +211,14 @@ def chat(req: ChatRequest):
     mem_repo = SQLiteMemoryRepository(db)
     art_repo = SQLiteArtifactRepository(db)
 
-    runtime, model_repo, setting_repo = _build_runtime_for_request(db)
+    runtime, model_repo, setting_repo, catalog_repo = _build_runtime_for_request(db)
 
     intent_service = IntentService()
     capability_service = CapabilityService()
     # MemoryService stays inert until ContextBuilder touches it
     memory_service = MemoryService(mem_repo, conv_repo, setting_repo)
     context_builder = ContextBuilder(memory_service)
-    model_selector = ModelSelector()
+    model_selector = ModelSelector(catalog_repo)
     provider = OllamaProvider()
     planner = Planner()
 
@@ -258,16 +263,28 @@ def get_conversations(db: Session = Depends(get_db)):
     return [{
         "id": c.id,
         "title": c.title,
-        "updated_at": c.updated_at
+        "updated_at": c.updated_at,
+        "project_id": c.project_id
     } for c in convs]
 
 
 @app.post("/api/conversations")
-def create_conversation(db: Session = Depends(get_db)):
+def create_conversation(project_id: Optional[str] = None, db: Session = Depends(get_db)):
+    if not project_id or project_id == "null":
+        project_id = None
     conv_repo = SQLiteConversationRepository(db)
     conv_id = str(uuid.uuid4())
-    conv_repo.create(conv_id, "New Chat", 1)
-    return {"id": conv_id, "title": "New Chat"}
+    conv_repo.create(conv_id, "New Chat", 1, project_id)
+    return {"id": conv_id, "title": "New Chat", "project_id": project_id}
+
+
+@app.post("/api/conversations/{conv_id}/project")
+def update_conversation_project(conv_id: str, project_id: Optional[str] = None, db: Session = Depends(get_db)):
+    if not project_id or project_id == "null":
+        project_id = None
+    conv_repo = SQLiteConversationRepository(db)
+    conv_repo.update_project(conv_id, project_id)
+    return {"status": "success"}
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -325,7 +342,7 @@ def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
 @app.get("/api/system/status")
 def get_system_status(db: Session = Depends(get_db)):
     """Fetch hardware performance specifications, active download states, and active model lists."""
-    runtime, model_repo, _setting_repo = _build_runtime_for_request(db)
+    runtime, model_repo, _setting_repo, _catalog_repo = _build_runtime_for_request(db)
     ms = runtime.model_service
 
     hw = ms.detect_hardware()

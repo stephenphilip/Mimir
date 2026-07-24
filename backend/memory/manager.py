@@ -1,13 +1,19 @@
 from typing import List, Dict, Any, Optional
 
-from ...interfaces.services import IMemoryService
-from ...interfaces.repositories import IMemoryRepository, IConversationRepository, ISettingRepository
+from app.interfaces.services import IMemoryService
+from app.interfaces.repositories import IMemoryRepository, IConversationRepository, ISettingRepository
 
+from memory.conversation import ConversationMemory, ConversationTurn
+from memory.project import ProjectMemory
+from memory.entity import EntityMemory
+from memory.episodic import EpisodicMemory
+from memory.semantic import SemanticMemory
 
-class MemoryService(IMemoryService):
+class MemoryManager(IMemoryService):
     """
-    Memory subsystems (storage/retrieval/ranking) initialize on first use —
-    typically when a conversation builds context, not at import/startup.
+    MemoryManager — Orchestrates the layered memory system.
+    
+    Replaces the legacy MemoryService.
     """
 
     def __init__(
@@ -20,33 +26,11 @@ class MemoryService(IMemoryService):
         self.conversation_repo = conversation_repo
         self.setting_repo = setting_repo
 
-        self._initialized = False
-        self.storage = None
-        self.retrieval = None
-        self.ranking = None
-        self.injection = None
-
-    def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
-        from .storage import MemoryStorage
-        from .retrieval import MemoryRetrieval
-        from .ranking import MemoryRanking
-        from .injection import MemoryInjection
-
-        self.storage = MemoryStorage(self.memory_repo)
-        self.retrieval = MemoryRetrieval(self.storage)
-        self.ranking = MemoryRanking()
-        self.injection = MemoryInjection()
-        self._initialized = True
-
     def get_user_profile(self, user_id: int = 1) -> Dict[str, Any]:
         """Fetch user profile information."""
-        self._ensure_initialized()
-        memories = self.retrieval.retrieve_memories(user_id)
-        ranked = self.ranking.rank_memories(memories)
-
-        profile = {m.key: m.value for m in ranked}
+        memories = self.memory_repo.get_all_by_user(user_id)
+        
+        profile = {m.key: m.value for m in memories}
 
         name = self.memory_repo.get_user_name(user_id)
         if name:
@@ -55,14 +39,17 @@ class MemoryService(IMemoryService):
             profile["name"] = "User"
 
         return profile
+        
+    def get_entity_memory(self, user_id: int = 1) -> EntityMemory:
+        """Returns the user profile as a typed EntityMemory layer."""
+        return EntityMemory(self.get_user_profile(user_id))
 
     def update_user_profile(self, key: str, value: str, user_id: int = 1) -> None:
         """Update or insert a profile key-value."""
-        self._ensure_initialized()
         if key == "name":
             self.memory_repo.save_user_name(user_id, value)
         else:
-            self.storage.save_memory(user_id, key, value)
+            self.memory_repo.save(user_id, key, value)
 
     def get_settings(self) -> Dict[str, str]:
         """Fetch system settings."""
@@ -73,19 +60,23 @@ class MemoryService(IMemoryService):
         self.setting_repo.save(key, value)
 
     def get_recent_context(self, conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch conversation messages formatted as prompt context."""
+        """Fetch conversation messages formatted as prompt context (Legacy support)."""
         messages = self.conversation_repo.get_messages(conversation_id, limit=limit)
         return [{"role": m.sender, "content": m.content} for m in messages]
+        
+    def get_conversation_memory(self, conversation_id: str, limit: int = 10) -> ConversationMemory:
+        """Returns recent messages as a typed ConversationMemory layer."""
+        messages = self.conversation_repo.get_messages(conversation_id, limit=limit)
+        return ConversationMemory.from_messages(messages)
 
     def get_shared_project_context(self, project_id: str, current_conv_id: str, limit_per_chat: int = 2) -> List[Dict[str, Any]]:
-        """Fetch recent message pairs from other chats in the same project to act as shared context."""
+        """Legacy shared project context."""
         other_convs = self.conversation_repo.get_by_project(project_id)
         shared = []
         for conv in other_convs:
             if conv.id == current_conv_id:
                 continue
             
-            # Fetch user + assistant message pairs
             messages = self.conversation_repo.get_messages(conv.id, limit=limit_per_chat)
             if messages:
                 chat_context = []
@@ -96,3 +87,19 @@ class MemoryService(IMemoryService):
                     "messages": chat_context
                 })
         return shared
+        
+    def get_project_memory(self, project_id: str, current_conv_id: str, limit_per_chat: int = 2) -> ProjectMemory:
+        """Returns shared project context as a typed ProjectMemory layer."""
+        shared = self.get_shared_project_context(project_id, current_conv_id, limit_per_chat)
+        return ProjectMemory(shared)
+        
+    def get_episodic_memory(self, user_id: int = 1) -> EpisodicMemory:
+        """Returns episodic memory (Stub for Phase 3)."""
+        return EpisodicMemory([])
+        
+    def get_semantic_memory(self, user_id: int = 1, query: str = "") -> SemanticMemory:
+        """Returns semantic memory (Stub for Phase 3)."""
+        return SemanticMemory([])
+
+# Export MemoryManager
+__all__ = ["MemoryManager"]

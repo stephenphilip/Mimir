@@ -33,7 +33,7 @@ _BUILTIN_MANIFESTS: List[Dict[str, Any]] = [
         "name": "Python Executor",
         "version": "1.0.0",
         "capability": "python_execution",
-        "entry": "app.extensions.python:PythonExecutor",
+        "entry": "tools.python_tool:PythonTool",
         "source": "builtin",
         "enabled": True,
     },
@@ -127,6 +127,25 @@ class PluginLoader:
         if instance is not None:
             self._instances[manifest.id] = instance
         return instance
+
+    def get_class(self, capability: str) -> Optional[Any]:
+        """
+        Return the executor class for capability, importing its module on first use,
+        but without instantiating it.
+        """
+        manifest = next(
+            (m for m in self.manifests if m.capability == capability and m.enabled),
+            None,
+        )
+        if not manifest:
+            return None
+        
+        entry = manifest.entry
+        if ":" not in entry:
+            return None
+        module_path, attr = entry.split(":", 1)
+        module = importlib.import_module(module_path)
+        return getattr(module, attr)
 
     def _import_and_construct(self, manifest: PluginManifest, *args, **kwargs) -> Any:
         entry = manifest.entry

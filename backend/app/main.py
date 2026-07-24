@@ -14,22 +14,13 @@ from runtime.runtime_coordinator import get_runtime
 from .db import SessionLocal, ensure_db_ready
 from .repositories.sqlite_repositories import (
     SQLiteConversationRepository,
-    SQLiteMemoryRepository,
     SQLiteModelRepository,
-    SQLiteArtifactRepository,
     SQLiteSettingRepository,
-    SQLiteModelCatalogRepository
+    SQLiteModelCatalogRepository,
+    SQLiteArtifactRepository,
 )
-from .services.intent_service import IntentService
-from .services.capability_service import CapabilityService
-from .services.memory.memory_service import MemoryService
-from .services.context_builder import ContextBuilder
-from .services.model_selector import ModelSelector
-from .services.planner import Planner
-from .services.execution_engine import ExecutionEngine
-from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
-from .core.orchestrator import Orchestrator
+from .pipeline_factory import build_pipeline
 
 # Architectural decision: do NOT init DB or contact Ollama at import time.
 # Config is imported above (cheap); dirs/DB/plugins load in startup_event.
@@ -189,7 +180,13 @@ def stream_with_cleanup(generator, db: Session):
 
 
 def _build_runtime_for_request(db: Session):
-    """Bind a request-scoped ModelService to the process-wide RuntimeCoordinator."""
+    """
+    Bind a request-scoped ModelService to the process-wide RuntimeCoordinator.
+
+    Used by non-chat endpoints (e.g. /api/system/status) that need Ollama
+    access but don't require the full inference pipeline.
+    For the chat endpoint, use pipeline_factory.build_pipeline() directly.
+    """
     settings = get_settings()
     runtime = get_runtime()
     model_repo = SQLiteModelRepository(db)
@@ -202,57 +199,30 @@ def _build_runtime_for_request(db: Session):
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    """SSE endpoint streaming intent, capability checks, model loading, chat content, and script execution logs."""
+    """
+    SSE endpoint — streams intent classification, model selection, LLM content,
+    Python execution results, and download progress events.
+
+    Pipeline is constructed by pipeline_factory.build_pipeline() to keep this
+    endpoint thin. Phase 4 will swap build_pipeline() for build_agent_runtime().
+    """
     ensure_db_ready()
     db = SessionLocal()
     paths = get_paths()
+    runtime = get_runtime()
 
+    # Full pipeline construction delegated to factory
+    orchestrator = build_pipeline(db, paths, runtime)
+
+    # Ensure conversation record exists before streaming starts
+    from .repositories.sqlite_repositories import SQLiteConversationRepository
     conv_repo = SQLiteConversationRepository(db)
-    mem_repo = SQLiteMemoryRepository(db)
-    art_repo = SQLiteArtifactRepository(db)
-
-    runtime, model_repo, setting_repo, catalog_repo = _build_runtime_for_request(db)
-
-    intent_service = IntentService()
-    capability_service = CapabilityService()
-    # MemoryService stays inert until ContextBuilder touches it
-    memory_service = MemoryService(mem_repo, conv_repo, setting_repo)
-    context_builder = ContextBuilder(memory_service)
-    model_selector = ModelSelector(catalog_repo)
-    provider = OllamaProvider()
-    planner = Planner()
-
-    # Lazy plugin import: PythonExecutor loaded only when python_execution runs
-    def executor_factory(capability: str):
-        return runtime.get_executor(
-            capability,
-            art_repo,
-            setting_repo,
-            str(paths.workspace_dir),
-        )
-
-    execution_engine = ExecutionEngine(art_repo, executor_factory=executor_factory)
-
-    orchestrator = Orchestrator(
-        intent_service=intent_service,
-        capability_service=capability_service,
-        context_builder=context_builder,
-        model_selector=model_selector,
-        provider=provider,
-        execution_engine=execution_engine,
-        planner=planner,
-        runtime=runtime,
-        conversation_repo=conv_repo,
-        model_repo=model_repo,
-    )
-
-    conv = conv_repo.get_by_id(req.conversation_id)
-    if not conv:
+    if not conv_repo.get_by_id(req.conversation_id):
         conv_repo.create(req.conversation_id, "New Chat", 1)
 
     return StreamingResponse(
         stream_with_cleanup(orchestrator.process_prompt(req.conversation_id, req.prompt), db),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )
 
 

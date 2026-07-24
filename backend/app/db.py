@@ -139,6 +139,83 @@ class ExecutionHistory(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ── Phase 1: New memory layer tables (additive — existing tables unchanged) ──
+
+class WorkingMemoryLog(Base):
+    """
+    Optional debug trace of WorkingMemory contents.
+
+    WorkingMemory itself is ephemeral (per-request, never persisted).
+    This table is ONLY written when debug tracing is explicitly enabled.
+    In normal production use, this table remains empty.
+
+    Phase 1: Table created on startup, never written.
+    Phase 4+: Optional debug mode can write agent intermediate states here.
+    """
+    __tablename__ = "working_memory_log"
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(String, ForeignKey("conversations.id"), index=True, nullable=True)
+    session_id = Column(String, index=True, nullable=True)   # RuntimeCoordinator session
+    key = Column(String)
+    value = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EpisodicMemory(Base):
+    """
+    Episodic memories: AI-generated summaries of past conversation sessions.
+
+    Populated by SummarizerAgent (Phase 6) after a conversation ends.
+    Used by MemoryAgent (Phase 4) to inject relevant past session context
+    into new conversations without replaying full message history.
+
+    Example: "On 2026-07-20, the user worked on a Python FastAPI project
+    and asked for help with JWT authentication."
+
+    Phase 1: Table created on startup, never written.
+    Phase 6: SummarizerAgent writes summaries here after conversations end.
+    """
+    __tablename__ = "episodic_memory"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    conversation_id = Column(String, ForeignKey("conversations.id"), nullable=True, index=True)
+    summary = Column(Text)                          # AI-generated session summary
+    topics = Column(Text, nullable=True)            # JSON array: ["fastapi", "jwt", "python"]
+    sentiment = Column(String, nullable=True)       # "positive" | "neutral" | "negative"
+    importance_score = Column(Float, nullable=True) # 0.0–1.0, set by SummarizerAgent
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EntityMemory(Base):
+    """
+    Named entity memory: tracks people, places, projects, and concepts
+    the user has mentioned across conversations.
+
+    Examples:
+      - entity_name="Mimir Next", entity_type="project"
+      - entity_name="Stephen", entity_type="person"
+      - entity_name="FastAPI", entity_type="technology"
+
+    Populated by entity extraction in Phase 6.
+    Used by MemoryAgent (Phase 4) to inject entity-specific context
+    (e.g., "You have discussed the Mimir Next project in 3 previous chats").
+
+    Phase 1: Table created on startup, never written.
+    Phase 6: EntityExtractor writes records here during post-conversation processing.
+    """
+    __tablename__ = "entity_memory"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    entity_name = Column(String, index=True)
+    entity_type = Column(String)           # "person" | "place" | "project" | "technology" | "concept"
+    description = Column(Text, nullable=True)
+    attributes = Column(Text, nullable=True)  # JSON: {"language": "Python", "framework": "FastAPI"}
+    mention_count = Column(Integer, default=1)
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+
+
+
 def _get_engine():
     global _engine, _SessionLocal
     if _engine is None:
@@ -232,10 +309,10 @@ def init_db() -> None:
                     required_ram_gb=4.0,
                     required_vram_gb=2.0,
                     total_layers=28,
-                    score_reasoning=55.0,
+                    score_reasoning=65.0,
                     score_coding=35.0,
                     score_math=40.0,
-                    score_conversational=60.0,
+                    score_conversational=85.0,
                     tps_cpu=12.0,
                     tps_gpu=50.0,
                     is_active=1

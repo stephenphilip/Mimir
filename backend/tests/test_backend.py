@@ -1,6 +1,6 @@
 import sys
 from app.db import init_db, SessionLocal, User, Setting
-from app.services.intent_service import IntentService
+from app.services.intent_service import LegacyIntentService
 from app.services.capability_service import CapabilityService
 from app.services.model_service import ModelService
 from app.services.execution_service import ExecutionService
@@ -23,7 +23,7 @@ def run_tests():
         sys.exit(1)
 
     print("\n--- 2. Testing Intent Service ---")
-    intent_service = IntentService()
+    intent_service = LegacyIntentService()
     test_prompts = [
         ("Please create an excel expense tracker spreadsheet for this year", "spreadsheet_generation"),
         ("Plot a bar chart of the sales data for me", "data_visualization"),
@@ -74,7 +74,14 @@ def run_tests():
 
     print("\n--- 5. Testing Execution Service ---")
     db = SessionLocal()
-    exec_service = ExecutionService()
+    from tools.python_tool import PythonTool
+    from config.paths import get_paths
+    from app.core.context import ExecutionContext
+    
+    from app.repositories.sqlite_repositories import SQLiteSettingRepository as SqliteSetRepo
+    setting_repo_local = SqliteSetRepo(db)
+    exec_tool = PythonTool(str(get_paths().workspace_dir), setting_repo=setting_repo_local)
+    
     code = """
 import pandas as pd
 import numpy as np
@@ -88,7 +95,8 @@ df.to_csv('test_run.csv', index=False)
 print("CSV generated successfully.")
 """
     try:
-        res = exec_service.execute_code(code, message_id=None, db=db)
+        ctx = ExecutionContext(prompt="test")
+        res = exec_tool.execute({"code": code}, ctx)
         print(f"Exit code: {res['exit_code']}")
         print(f"Stdout: {res['stdout'].strip()}")
         print(f"Stderr: {res['stderr'].strip()}")

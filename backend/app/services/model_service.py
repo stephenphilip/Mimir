@@ -7,6 +7,9 @@ from typing import List, Dict, Any, Optional
 from ..interfaces.services import IModelService, IGPUService
 from ..interfaces.repositories import IModelRepository, ISettingRepository, IModelCatalogRepository
 from .gpu_service import GPUService
+# Phase 1: Background downloads use Scheduler for lifecycle tracking
+from ai_runtime.scheduler import get_scheduler
+
 
 # Process-level hardware cache (nvidia-smi is expensive on every chat)
 _HW_CACHE: Optional[Dict[str, Any]] = None
@@ -168,22 +171,26 @@ class ModelService(IModelService):
                 self.trigger_background_download(model)
 
     def trigger_background_download(self, model_name: str) -> None:
-        """Trigger an asynchronous model pull."""
+        """
+        Trigger an asynchronous model pull via the Scheduler.
+
+        Phase 1: Uses Scheduler.submit() instead of raw threading.Thread.
+        Behavior is identical — _download_worker() runs in a daemon thread.
+        Download status is now queryable via get_runtime().get_scheduler().list_running().
+        """
         existing = self.model_repo.get_download(model_name)
         if existing and existing.status in ["downloading", "pending"]:
             return
-        
+
         self.model_repo.save_download(
             model_name=model_name,
             progress=0.0,
             status="pending",
-            error=None
+            error=None,
         )
 
-        # Start background thread
-        thread = threading.Thread(target=self._download_worker, args=(model_name,))
-        thread.daemon = True
-        thread.start()
+        # Submit to Scheduler — daemon thread, lifecycle tracked
+        get_scheduler().submit(f"download:{model_name}", self._download_worker, model_name)
 
     def _download_worker(self, model_name: str) -> None:
         """Worker thread to handle the streaming pull API from Ollama with midway error handling."""

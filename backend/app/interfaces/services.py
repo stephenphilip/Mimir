@@ -1,123 +1,38 @@
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
-from ..core.context import ExecutionContext
+"""
+Backward-compatible re-export hub for all service interfaces.
 
-class IIntentService(ABC):
-    @abstractmethod
-    def classify(self, prompt: str) -> Dict[str, Any]:
-        """Classify user prompt to detect intention and confidence."""
-        pass
+This file previously contained all ABCs directly.
+They are now split into domain-specific files for clarity:
+  - agent_interfaces.py  : IIntentService, ICapabilityService, IContextBuilder,
+                           IModelSelector, IPlanner, IExecutionEngine
+  - memory_interfaces.py : IMemoryService
+  - model_interfaces.py  : IModelService, IGPUService
 
-class ICapabilityService(ABC):
-    @abstractmethod
-    def resolve(self, intent: str) -> List[str]:
-        """Resolve capability requirements for a given intent."""
-        pass
+All existing imports from this module continue to work unchanged:
+    from app.interfaces.services import IIntentService   # still valid
+    from app.interfaces.agent_interfaces import IIntentService  # new path
+"""
 
-    @abstractmethod
-    def get_execution_requirements(self, capabilities: List[str]) -> Dict[str, Any]:
-        """Determine system and package requirements for a set of capabilities."""
-        pass
+# Re-export everything from split files for full backward compatibility
+from .agent_interfaces import (  # noqa: F401
+    IIntentService,
+    ICapabilityService,
+    IContextBuilder,
+    IModelSelector,
+    IPlanner,
+    IExecutionEngine,
+)
+from .memory_interfaces import IMemoryService  # noqa: F401
+from .model_interfaces import IModelService, IGPUService  # noqa: F401
 
-class IMemoryService(ABC):
-    @abstractmethod
-    def get_user_profile(self, user_id: int = 1) -> Dict[str, Any]:
-        """Fetch user profile information."""
-        pass
-
-    @abstractmethod
-    def update_user_profile(self, key: str, value: str, user_id: int = 1) -> None:
-        """Update or insert a profile key-value."""
-        pass
-
-    @abstractmethod
-    def get_settings(self) -> Dict[str, str]:
-        """Fetch system settings."""
-        pass
-
-    @abstractmethod
-    def set_setting(self, key: str, value: str) -> None:
-        """Update a system setting."""
-        pass
-
-    @abstractmethod
-    def get_recent_context(self, conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch conversation messages formatted as prompt context."""
-        pass
-
-    @abstractmethod
-    def get_shared_project_context(self, project_id: str, current_conv_id: str, limit_per_chat: int = 2) -> List[Dict[str, Any]]:
-        """Fetch recent message pairs from other chats in the same project to act as shared context."""
-        pass
-
-class IContextBuilder(ABC):
-    @abstractmethod
-    def build_context(self, context: ExecutionContext) -> None:
-        """Enrich context with memories, history and format final prompts."""
-        pass
-
-class IModelSelector(ABC):
-    @abstractmethod
-    def select_best_model(
-        self,
-        context: ExecutionContext,
-        available_models: List[str],
-        capabilities: List[str],
-        hardware_info: Dict[str, Any]
-    ) -> str:
-        """Evaluate criteria to select the most appropriate model."""
-        pass
-
-class IPlanner(ABC):
-    @abstractmethod
-    def create_plan(self, context: ExecutionContext) -> Any:
-        """Construct a minimal execution plan for the request."""
-        pass
-
-class IExecutionEngine(ABC):
-    @abstractmethod
-    def register_executor(self, executor: Any) -> None:
-        """Register capability handlers/executors."""
-        pass
-
-    @abstractmethod
-    def execute(self, context: ExecutionContext) -> Dict[str, Any]:
-        """Coordinate plan or script execution using executors."""
-        pass
-
-class IModelService(ABC):
-    @abstractmethod
-    def detect_hardware(self) -> Dict[str, Any]:
-        """Detect GPU availability, VRAM, and RAM specifications."""
-        pass
-
-    @abstractmethod
-    def get_installed_models_from_ollama(self) -> List[str]:
-        """Fetch model names currently present in the Ollama service."""
-        pass
-
-    @abstractmethod
-    def sync_models_to_db(self) -> None:
-        """Synchronize active database records with local Ollama service."""
-        pass
-
-    @abstractmethod
-    def unload_other_models(self, active_model: Optional[str] = None) -> None:
-        """Unload inactive models from RAM/VRAM to optimize resources."""
-        pass
-
-    @abstractmethod
-    def preload_first_run_models(self) -> None:
-        """Ensure initial recommended models are installed on application start."""
-        pass
-
-    @abstractmethod
-    def trigger_background_download(self, model_name: str) -> None:
-        """Initiate non-blocking download of a model."""
-        pass
-
-class IGPUService(ABC):
-    @abstractmethod
-    def detect_hardware(self) -> Dict[str, Any]:
-        """Detect GPU availability, VRAM, and System RAM."""
-        pass
+__all__ = [
+    "IIntentService",
+    "ICapabilityService",
+    "IContextBuilder",
+    "IModelSelector",
+    "IPlanner",
+    "IExecutionEngine",
+    "IMemoryService",
+    "IModelService",
+    "IGPUService",
+]

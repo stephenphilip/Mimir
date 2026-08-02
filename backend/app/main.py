@@ -171,12 +171,37 @@ class SettingsUpdate(BaseModel):
     theme: str
 
 
-def stream_with_cleanup(generator, db: Session):
+def stream_with_cleanup(generator, db: Session, conv_id: str = None, runtime = None):
     try:
         for chunk in generator:
             yield chunk
     finally:
         db.close()
+        if conv_id and runtime and hasattr(runtime, 'scheduler'):
+            # Trigger background memory extraction tasks (Phase 6)
+            def run_background_tasks(cid: str):
+                from app.db import SessionLocal
+                from agents.summarizer_agent import SummarizerAgent
+                from agents.entity_extractor import EntityExtractorAgent
+                from app.repositories.sqlite_repositories import SQLiteConversationRepository, SQLiteEpisodicRepository, SQLiteEntityRepository
+                from app.providers.ollama_provider import OllamaProvider
+                
+                bg_db = SessionLocal()
+                try:
+                    conv_repo = SQLiteConversationRepository(bg_db)
+                    episodic_repo = SQLiteEpisodicRepository(bg_db)
+                    entity_repo = SQLiteEntityRepository(bg_db)
+                    provider = OllamaProvider()
+                    
+                    summarizer = SummarizerAgent(conv_repo, episodic_repo, provider)
+                    extractor = EntityExtractorAgent(conv_repo, entity_repo, provider)
+                    
+                    summarizer.summarize_conversation(cid)
+                    extractor.extract_entities(cid)
+                finally:
+                    bg_db.close()
+            
+            runtime.scheduler.submit(f"post_processing_{conv_id}", run_background_tasks, conv_id)
 
 
 def _build_runtime_for_request(db: Session):
@@ -221,7 +246,12 @@ def chat(req: ChatRequest):
         conv_repo.create(req.conversation_id, "New Chat", 1)
 
     return StreamingResponse(
-        stream_with_cleanup(orchestrator.process_prompt(req.conversation_id, req.prompt), db),
+        stream_with_cleanup(
+            orchestrator.process_prompt(req.conversation_id, req.prompt), 
+            db, 
+            conv_id=req.conversation_id, 
+            runtime=runtime
+        ),
         media_type="text/event-stream",
     )
 

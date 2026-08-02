@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional
 
 from app.interfaces.services import IMemoryService
-from app.interfaces.repositories import IMemoryRepository, IConversationRepository, ISettingRepository
+from app.interfaces.repositories import IMemoryRepository, IConversationRepository, ISettingRepository, IEpisodicRepository, IEntityRepository
 
 from memory.conversation import ConversationMemory, ConversationTurn
 from memory.project import ProjectMemory
@@ -21,10 +21,14 @@ class MemoryManager(IMemoryService):
         memory_repo: IMemoryRepository,
         conversation_repo: IConversationRepository,
         setting_repo: ISettingRepository,
+        episodic_repo: Optional['IEpisodicRepository'] = None,
+        entity_repo: Optional['IEntityRepository'] = None,
     ):
         self.memory_repo = memory_repo
         self.conversation_repo = conversation_repo
         self.setting_repo = setting_repo
+        self.episodic_repo = episodic_repo
+        self.entity_repo = entity_repo
 
     def get_user_profile(self, user_id: int = 1) -> Dict[str, Any]:
         """Fetch user profile information."""
@@ -41,8 +45,12 @@ class MemoryManager(IMemoryService):
         return profile
         
     def get_entity_memory(self, user_id: int = 1) -> EntityMemory:
-        """Returns the user profile as a typed EntityMemory layer."""
-        return EntityMemory(self.get_user_profile(user_id))
+        """Returns the user profile and extracted entities as a typed EntityMemory layer."""
+        profile = self.get_user_profile(user_id)
+        entities = []
+        if self.entity_repo:
+            entities = self.entity_repo.get_all_by_user(user_id)
+        return EntityMemory(entities=entities, profile=profile)
 
     def update_user_profile(self, key: str, value: str, user_id: int = 1) -> None:
         """Update or insert a profile key-value."""
@@ -93,12 +101,16 @@ class MemoryManager(IMemoryService):
         shared = self.get_shared_project_context(project_id, current_conv_id, limit_per_chat)
         return ProjectMemory(shared)
         
-    def get_episodic_memory(self, user_id: int = 1) -> EpisodicMemory:
-        """Returns episodic memory (Stub for Phase 3)."""
-        return EpisodicMemory([])
+    def get_episodic_memory(self, user_id: int = 1, limit: int = 5) -> EpisodicMemory:
+        """Returns episodic memory from recent conversations."""
+        episodes = []
+        if self.episodic_repo:
+            episodes = self.episodic_repo.get_recent_by_user(user_id, limit=limit)
+        return EpisodicMemory(episodes)
         
     def get_semantic_memory(self, user_id: int = 1, query: str = "") -> SemanticMemory:
-        """Returns semantic memory (Stub for Phase 3)."""
+        """Returns semantic memory (Phase 6 keyword stub)."""
+        # A full RAG implementation would use ISemanticRepository
         return SemanticMemory([])
 
 # Export MemoryManager

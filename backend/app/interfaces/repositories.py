@@ -189,3 +189,41 @@ class IModelCatalogRepository(ABC):
     def delete_by_name(self, name: str) -> bool:
         """Deactivate or remove model from catalog."""
         pass
+
+class IEpisodicRepository(ABC):
+    @abstractmethod
+    def get_recent_by_user(self, user_id: int, limit: int = 5) -> List[Any]:
+        """Fetch recent episodic memories for a user."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, conversation_id: str, summary: str, topics: Optional[str] = None) -> Any:
+        """Create an episodic memory record."""
+        pass
+
+class IEntityRepository(ABC):
+    @abstractmethod
+    def get_by_name(self, user_id: int, entity_name: str) -> Optional[Any]:
+        """Fetch an entity by name."""
+        pass
+
+    @abstractmethod
+    def get_all_by_user(self, user_id: int) -> List[Any]:
+        """Fetch all entities for a user."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, entity_name: str, entity_type: str, description: Optional[str] = None, attributes: Optional[str] = None) -> Any:
+        """Create or update an entity memory record."""
+        pass
+
+class ISemanticRepository(ABC):
+    @abstractmethod
+    def search(self, user_id: int, query: str, limit: int = 5) -> List[Any]:
+        """Search semantic memories."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, content: str, source_id: Optional[str] = None) -> Any:
+        """Create a semantic memory record."""
+        pass

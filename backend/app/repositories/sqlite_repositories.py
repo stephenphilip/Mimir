@@ -8,7 +8,9 @@ from ..interfaces.repositories import (
     IModelRepository,
     IArtifactRepository,
     ISettingRepository,
-    IModelCatalogRepository
+    IModelCatalogRepository,
+    IEpisodicRepository,
+    IEntityRepository
 )
 from ..db import Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact, Setting, User, ExecutionHistory, ModelCatalog
 
@@ -324,4 +326,61 @@ class SQLiteModelCatalogRepository(IModelCatalogRepository):
             self.db.commit()
             return True
         return False
+
+class SQLiteEpisodicRepository(IEpisodicRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_recent_by_user(self, user_id: int, limit: int = 5) -> List[Any]:
+        from app.db import EpisodicMemory
+        return self.db.query(EpisodicMemory).filter(EpisodicMemory.user_id == user_id).order_by(EpisodicMemory.created_at.desc()).limit(limit).all()
+
+    def save(self, user_id: int, conversation_id: str, summary: str, topics: Optional[str] = None) -> Any:
+        from app.db import EpisodicMemory
+        memory = EpisodicMemory(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            summary=summary,
+            topics=topics
+        )
+        self.db.add(memory)
+        self.db.commit()
+        self.db.refresh(memory)
+        return memory
+
+class SQLiteEntityRepository(IEntityRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_name(self, user_id: int, entity_name: str) -> Optional[Any]:
+        from app.db import EntityMemory
+        return self.db.query(EntityMemory).filter(EntityMemory.user_id == user_id, EntityMemory.entity_name == entity_name).first()
+
+    def get_all_by_user(self, user_id: int) -> List[Any]:
+        from app.db import EntityMemory
+        return self.db.query(EntityMemory).filter(EntityMemory.user_id == user_id).all()
+
+    def save(self, user_id: int, entity_name: str, entity_type: str, description: Optional[str] = None, attributes: Optional[str] = None) -> Any:
+        from app.db import EntityMemory
+        from datetime import datetime
+        entity = self.get_by_name(user_id, entity_name)
+        if entity:
+            entity.mention_count += 1
+            entity.last_seen_at = datetime.utcnow()
+            if description:
+                entity.description = description
+            if attributes:
+                entity.attributes = attributes
+        else:
+            entity = EntityMemory(
+                user_id=user_id,
+                entity_name=entity_name,
+                entity_type=entity_type,
+                description=description,
+                attributes=attributes
+            )
+            self.db.add(entity)
+        self.db.commit()
+        self.db.refresh(entity)
+        return entity
 

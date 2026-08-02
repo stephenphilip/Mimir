@@ -2,7 +2,7 @@ import json
 import time
 from typing import Dict, Any, Optional, Generator, Union
 
-from agents.base import IAgent
+from agents.base import IAgent, AgentResult
 from app.interfaces.agent_interfaces import IIntentService
 from app.interfaces.providers import IProvider
 from app.core.context import ExecutionContext
@@ -93,7 +93,6 @@ Return ONLY a valid JSON object with the following schema, and no other text:
 
     def run(self, context: ExecutionContext) -> Generator[Union[str, AgentResult], None, None]:
         """IAgent interface: mutate context with intent."""
-        from agents.base import AgentResult
         import json
         
         yield "data: " + json.dumps({"type": "status", "status": "Detecting intent..."}) + "\n\n"

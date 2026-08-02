@@ -25,12 +25,12 @@ class ContextBuilder(IContextBuilder):
         semantic_mem = self.memory_manager.get_semantic_memory(user_id, query=context.prompt)
         
         # Populate context objects for downstream use
-        context.user = entity_mem.entities
-        context.retrieved_memories = [{"key": k, "value": v} for k, v in entity_mem.entities.items() if k != "name"]
+        context.user = entity_mem.profile
+        context.retrieved_memories = [{"key": k, "value": v} for k, v in entity_mem.profile.items() if k != "name"]
 
         settings = self.memory_manager.get_settings()
         personality = settings.get("personality", "helpful, concise assistant")
-        user_name = entity_mem.entities.get("name", "User")
+        user_name = entity_mem.profile.get("name", "User")
         
         # 2. Build the structured Prompt
         builder = PromptBuilder()

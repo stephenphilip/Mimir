@@ -80,6 +80,23 @@ class IntentService(IIntentService):
                 r"\bblog\b",
                 r"\barticle\b",
             ],
+            "image_generation": [
+                r"\bgenerate (an? )?image\b",
+                r"\bcreate (an? )?image\b",
+                r"\bdraw (an?|me)\b",
+                r"\billustration\b",
+                r"\bcomfyui\b",
+                r"\bdall-?e\b",
+                r"\btext to image\b",
+                r"\btext-to-image\b",
+            ],
+            "vision_analysis": [
+                r"\bocr\b",
+                r"\bread (this|the) (image|screenshot|photo|scan)\b",
+                r"\bdescribe (this|the) (image|screenshot|photo)\b",
+                r"\bwhat.?s in (this|the) (image|picture|photo)\b",
+                r"\bscanned document\b",
+            ],
         }
 
     def classify(self, prompt: str) -> Dict[str, Any]:

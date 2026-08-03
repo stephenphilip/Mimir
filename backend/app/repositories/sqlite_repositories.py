@@ -9,7 +9,11 @@ from ..interfaces.repositories import (
     IArtifactRepository,
     ISettingRepository
 )
-from ..db import Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact, Setting, User, ExecutionHistory
+from ..interfaces.workspaces import IWorkspaceRepository, IFileRepository
+from ..db import (
+    Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact,
+    Setting, User, ExecutionHistory, Workspace, ManagedFile,
+)
 
 class SQLiteConversationRepository(IConversationRepository):
     def __init__(self, db: Session):
@@ -176,21 +180,103 @@ class SQLiteArtifactRepository(IArtifactRepository):
     def __init__(self, db: Session):
         self.db = db
 
-    def create(self, message_id: Optional[int], file_name: str, file_path: str, file_type: str, file_size: int) -> GeneratedArtifact:
+    def create(
+        self,
+        message_id: Optional[int],
+        file_name: str,
+        file_path: str,
+        file_type: str,
+        file_size: int,
+        artifact_uuid: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        provider: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        status: str = "ready",
+        thumbnail_path: Optional[str] = None,
+        original_prompt: Optional[str] = None,
+        enhanced_prompt: Optional[str] = None,
+        execution_plan_json: Optional[str] = None,
+        model_name: Optional[str] = None,
+        intelligence_json: Optional[str] = None,
+        version: int = 1,
+        validation_status: Optional[str] = None,
+    ) -> GeneratedArtifact:
         art = GeneratedArtifact(
             message_id=message_id,
+            artifact_uuid=artifact_uuid,
+            workspace_id=workspace_id,
             file_name=file_name,
             file_path=file_path,
             file_type=file_type,
-            file_size=file_size
+            file_size=file_size,
+            mime_type=mime_type,
+            provider=provider,
+            status=status,
+            thumbnail_path=thumbnail_path,
+            original_prompt=original_prompt,
+            enhanced_prompt=enhanced_prompt,
+            execution_plan_json=execution_plan_json,
+            model_name=model_name,
+            intelligence_json=intelligence_json,
+            version=version,
+            validation_status=validation_status,
         )
         self.db.add(art)
         self.db.commit()
         self.db.refresh(art)
         return art
 
+    def update_intelligence(self, artifact_uuid: str, intelligence: Dict[str, Any]) -> Optional[GeneratedArtifact]:
+        import json
+
+        art = self.get_by_uuid(artifact_uuid)
+        if not art:
+            return None
+        if intelligence.get("original_prompt") is not None:
+            art.original_prompt = intelligence["original_prompt"]
+        if intelligence.get("enhanced_prompt") is not None:
+            art.enhanced_prompt = intelligence["enhanced_prompt"]
+        if intelligence.get("execution_plan") is not None:
+            art.execution_plan_json = json.dumps(intelligence["execution_plan"])
+        if intelligence.get("model") is not None:
+            art.model_name = intelligence["model"]
+        if intelligence.get("validation_status") is not None:
+            art.validation_status = intelligence["validation_status"]
+        art.intelligence_json = json.dumps(intelligence)
+        if intelligence.get("version") is not None:
+            art.version = int(intelligence["version"])
+        self.db.commit()
+        self.db.refresh(art)
+        return art
+
+    def get_by_id(self, artifact_id: int) -> Optional[GeneratedArtifact]:
+        return self.db.query(GeneratedArtifact).filter(GeneratedArtifact.id == artifact_id).first()
+
+    def get_by_uuid(self, artifact_uuid: str) -> Optional[GeneratedArtifact]:
+        return self.db.query(GeneratedArtifact).filter(GeneratedArtifact.artifact_uuid == artifact_uuid).first()
+
     def get_by_message_id(self, message_id: int) -> List[GeneratedArtifact]:
         return self.db.query(GeneratedArtifact).filter(GeneratedArtifact.message_id == message_id).all()
+
+    def list_all(
+        self,
+        workspace_id: Optional[str] = None,
+        artifact_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[GeneratedArtifact]:
+        q = self.db.query(GeneratedArtifact).order_by(GeneratedArtifact.created_at.desc())
+        if workspace_id:
+            q = q.filter(GeneratedArtifact.workspace_id == workspace_id)
+        if artifact_type:
+            q = q.filter(GeneratedArtifact.file_type == artifact_type)
+        return q.limit(limit).all()
+
+    def count_by_workspace(self, workspace_id: str) -> int:
+        return (
+            self.db.query(GeneratedArtifact)
+            .filter(GeneratedArtifact.workspace_id == workspace_id)
+            .count()
+        )
 
     def save_execution_history(
         self,
@@ -238,3 +324,140 @@ class SQLiteSettingRepository(ISettingRepository):
             self.db.commit()
             self.db.refresh(s)
             return s
+
+
+class SQLiteWorkspaceRepository(IWorkspaceRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_all(self) -> List[Workspace]:
+        return self.db.query(Workspace).order_by(Workspace.created_at.asc()).all()
+
+    def get_by_id(self, workspace_id: str) -> Optional[Workspace]:
+        return self.db.query(Workspace).filter(Workspace.id == workspace_id).first()
+
+    def get_default(self) -> Optional[Workspace]:
+        ws = self.db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+        if ws:
+            return ws
+        return self.db.query(Workspace).order_by(Workspace.created_at.asc()).first()
+
+    def create(self, workspace_id: str, name: str, model: Optional[str] = None) -> Workspace:
+        ws = Workspace(id=workspace_id, name=name, model=model)
+        self.db.add(ws)
+        self.db.commit()
+        self.db.refresh(ws)
+        return ws
+
+    def update(
+        self,
+        workspace_id: str,
+        name: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Optional[Workspace]:
+        ws = self.get_by_id(workspace_id)
+        if not ws:
+            return None
+        if name is not None:
+            ws.name = name
+        if model is not None:
+            ws.model = model
+        ws.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(ws)
+        return ws
+
+    def delete(self, workspace_id: str) -> bool:
+        ws = self.get_by_id(workspace_id)
+        if not ws or ws.is_default:
+            return False
+        self.db.delete(ws)
+        self.db.commit()
+        return True
+
+
+class SQLiteFileRepository(IFileRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(
+        self,
+        file_id: str,
+        workspace_id: str,
+        file_name: str,
+        file_path: str,
+        mime_type: str,
+        file_size: int,
+        source: str = "upload",
+        pinned: bool = False,
+    ) -> ManagedFile:
+        row = ManagedFile(
+            id=file_id,
+            workspace_id=workspace_id,
+            file_name=file_name,
+            file_path=file_path,
+            mime_type=mime_type,
+            file_size=file_size,
+            source=source,
+            pinned=pinned,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def get_by_id(self, file_id: str) -> Optional[ManagedFile]:
+        return self.db.query(ManagedFile).filter(ManagedFile.id == file_id).first()
+
+    def list_files(
+        self,
+        workspace_id: Optional[str] = None,
+        category: Optional[str] = None,
+        search: Optional[str] = None,
+        pinned_only: bool = False,
+        limit: int = 200,
+    ) -> List[ManagedFile]:
+        from ..creator.mime import category_for_type, infer_type_from_filename
+
+        q = self.db.query(ManagedFile).order_by(ManagedFile.updated_at.desc())
+        if workspace_id:
+            q = q.filter(ManagedFile.workspace_id == workspace_id)
+        if pinned_only:
+            q = q.filter(ManagedFile.pinned.is_(True))
+        rows = q.limit(limit).all()
+
+        if search:
+            needle = search.lower()
+            rows = [r for r in rows if needle in r.file_name.lower()]
+        if category:
+            rows = [
+                r for r in rows
+                if category_for_type(infer_type_from_filename(r.file_name)) == category
+            ]
+        return rows
+
+    def update(
+        self,
+        file_id: str,
+        file_name: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> Optional[ManagedFile]:
+        row = self.get_by_id(file_id)
+        if not row:
+            return None
+        if file_name is not None:
+            row.file_name = file_name
+        if pinned is not None:
+            row.pinned = pinned
+        row.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def delete(self, file_id: str) -> bool:
+        row = self.get_by_id(file_id)
+        if not row:
+            return False
+        self.db.delete(row)
+        self.db.commit()
+        return True

@@ -1,4 +1,4 @@
-import { Mic, Paperclip, SendHorizontal } from "lucide-react";
+import { Mic, Plus, Search, SendHorizontal, Sparkles, Upload } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AttachedFile } from "../types";
 import { FileUploader, buildPromptWithAttachments } from "./FileUploader";
@@ -12,6 +12,11 @@ interface Props {
   disabled?: boolean;
   placeholder?: string;
   compact?: boolean;
+  promptStudioEnabled?: boolean;
+  onPromptStudioToggle?: (enabled: boolean) => void;
+  onOpenPromptStudio?: () => void;
+  researchModeEnabled?: boolean;
+  onResearchModeToggle?: (enabled: boolean) => void;
 }
 
 export function PromptInput({
@@ -23,9 +28,16 @@ export function PromptInput({
   disabled,
   placeholder = "Ask Mimir anything...",
   compact,
+  promptStudioEnabled = false,
+  onPromptStudioToggle,
+  onOpenPromptStudio,
+  researchModeEnabled = false,
+  onResearchModeToggle,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [showUploader, setShowUploader] = useState(files.length > 0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (files.length > 0) setShowUploader(true);
@@ -38,9 +50,23 @@ export function PromptInput({
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [value]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!menuRef.current?.contains(target)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
+    if (promptStudioEnabled && onOpenPromptStudio) {
+      onOpenPromptStudio();
+      return;
+    }
     onSend(buildPromptWithAttachments(trimmed, files));
   };
 
@@ -58,16 +84,54 @@ export function PromptInput({
       )}
 
       <div className="prompt-bar" role="group" aria-label="Message composer">
-        <button
-          type="button"
-          className="icon-btn prompt-action"
-          aria-label="Attach files"
-          title="Attach files"
-          disabled={disabled}
-          onClick={() => setShowUploader((v) => !v)}
-        >
-          <Paperclip size={18} />
-        </button>
+        <div className="composer-plus-wrap" ref={menuRef}>
+          <button
+            type="button"
+            className="icon-btn prompt-action"
+            aria-label="Composer options"
+            title="Options"
+            disabled={disabled}
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <Plus size={18} />
+          </button>
+
+          {menuOpen && (
+            <div className="composer-plus-menu glass-panel" role="menu">
+              <button
+                type="button"
+                className="composer-plus-item"
+                role="menuitem"
+                onClick={() => {
+                  setShowUploader(true);
+                  setMenuOpen(false);
+                }}
+              >
+                <Upload size={14} /> Upload files
+              </button>
+
+              <label className="composer-plus-toggle" role="menuitem">
+                <input
+                  type="checkbox"
+                  checked={promptStudioEnabled}
+                  onChange={(e) => onPromptStudioToggle?.(e.target.checked)}
+                  disabled={disabled}
+                />
+                <Sparkles size={14} /> Prompt Studio
+              </label>
+
+              <label className="composer-plus-toggle" role="menuitem">
+                <input
+                  type="checkbox"
+                  checked={researchModeEnabled}
+                  onChange={(e) => onResearchModeToggle?.(e.target.checked)}
+                  disabled={disabled}
+                />
+                <Search size={14} /> Research mode
+              </label>
+            </div>
+          )}
+        </div>
 
         <textarea
           ref={taRef}

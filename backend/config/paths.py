@@ -57,6 +57,8 @@ class Paths:
 @lru_cache(maxsize=1)
 def get_paths() -> Paths:
     """Resolve and cache project paths. Override via MIMIR_* env vars when needed."""
+    from .python_env import resolve_python_executable, venv_dir_for_python
+
     repo_root = Path(os.environ["MIMIR_REPO_ROOT"]).resolve() if os.environ.get("MIMIR_REPO_ROOT") else detect_repo_root()
     backend_dir = repo_root / "backend"
 
@@ -66,11 +68,14 @@ def get_paths() -> Paths:
         if os.environ.get("MIMIR_ARTIFACTS_DIR")
         else repo_root / "artifacts"
     )
-    venv_dir = (
-        Path(os.environ["MIMIR_VENV_DIR"]).resolve()
-        if os.environ.get("MIMIR_VENV_DIR")
-        else backend_dir / ".venv"
-    )
+
+    if os.environ.get("MIMIR_VENV_DIR"):
+        venv_dir = Path(os.environ["MIMIR_VENV_DIR"]).resolve()
+    else:
+        # Prefer a venv that actually has fpdf/pandas for code execution
+        resolved_python = resolve_python_executable(repo_root=repo_root)
+        venv_dir = venv_dir_for_python(resolved_python)
+
     extensions_dir = (
         Path(os.environ["MIMIR_EXTENSIONS_DIR"]).resolve()
         if os.environ.get("MIMIR_EXTENSIONS_DIR")

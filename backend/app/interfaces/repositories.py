@@ -106,13 +106,59 @@ class IModelRepository(ABC):
 
 class IArtifactRepository(ABC):
     @abstractmethod
-    def create(self, message_id: Optional[int], file_name: str, file_path: str, file_type: str, file_size: int) -> Any:
+    def create(
+        self,
+        message_id: Optional[int],
+        file_name: str,
+        file_path: str,
+        file_type: str,
+        file_size: int,
+        artifact_uuid: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        provider: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        status: str = "ready",
+        thumbnail_path: Optional[str] = None,
+        original_prompt: Optional[str] = None,
+        enhanced_prompt: Optional[str] = None,
+        execution_plan_json: Optional[str] = None,
+        model_name: Optional[str] = None,
+        intelligence_json: Optional[str] = None,
+        version: int = 1,
+        validation_status: Optional[str] = None,
+    ) -> Any:
         """Record a generated artifact."""
+        pass
+
+    @abstractmethod
+    def update_intelligence(self, artifact_uuid: str, intelligence: Dict[str, Any]) -> Optional[Any]:
+        """Attach or update artifact intelligence metadata."""
+        pass
+
+    @abstractmethod
+    def get_by_id(self, artifact_id: int) -> Optional[Any]:
+        pass
+
+    @abstractmethod
+    def get_by_uuid(self, artifact_uuid: str) -> Optional[Any]:
         pass
 
     @abstractmethod
     def get_by_message_id(self, message_id: int) -> List[Any]:
         """Get all artifacts linked to a message."""
+        pass
+
+    @abstractmethod
+    def list_all(
+        self,
+        workspace_id: Optional[str] = None,
+        artifact_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Any]:
+        pass
+
+    @abstractmethod
+    def count_by_workspace(self, workspace_id: str) -> int:
         pass
 
     @abstractmethod

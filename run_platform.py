@@ -253,6 +253,24 @@ def ensure_frontend_deps(frontend_dir: Path) -> None:
         sys.exit(1)
 
 
+def _load_mimir_env(root_dir: Path) -> None:
+    """Load mimir.env into process environment (simple KEY=VALUE format)."""
+    for name in ("mimir.env", ".env"):
+        env_file = root_dir / name
+        if not env_file.is_file():
+            continue
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        print(f"[Env] Loaded {env_file.name}")
+        break
+
+
 def drain_output(proc: subprocess.Popen, label: str) -> None:
     if proc.stdout is None:
         return
@@ -271,6 +289,7 @@ def main():
     print("==============================================================")
 
     root_dir = Path(__file__).resolve().parent
+    _load_mimir_env(root_dir)
     backend_dir = root_dir / "backend"
     frontend_dir = root_dir / "frontend"
 

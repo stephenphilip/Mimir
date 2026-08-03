@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,14 @@ class Settings:
     default_user_name: str
     default_personality: str
     default_theme: str
+
+    # Creator / image providers
+    image_provider: str
+    openai_api_key: Optional[str]
+    gemini_api_key: Optional[str]
+    stability_api_key: Optional[str]
+    comfyui_url: str
+    automatic1111_url: str
 
 
 @lru_cache(maxsize=1)
@@ -81,4 +90,10 @@ def get_settings() -> Settings:
             "helpful, concise, expert data analyst and assistant",
         ),
         default_theme=os.environ.get("MIMIR_DEFAULT_THEME", "dark"),
+        image_provider=os.environ.get("MIMIR_IMAGE_PROVIDER", "openai"),
+        openai_api_key=os.environ.get("OPENAI_API_KEY") or os.environ.get("MIMIR_OPENAI_API_KEY"),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("MIMIR_GEMINI_API_KEY"),
+        stability_api_key=os.environ.get("STABILITY_API_KEY") or os.environ.get("MIMIR_STABILITY_API_KEY"),
+        comfyui_url=os.environ.get("MIMIR_COMFYUI_URL", "http://127.0.0.1:8188"),
+        automatic1111_url=os.environ.get("MIMIR_AUTOMATIC1111_URL", "http://127.0.0.1:7860"),
     )

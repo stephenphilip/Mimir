@@ -31,11 +31,17 @@ export function normalizeArtifact(raw: Partial<Artifact> & { file_name: string }
   const file_type = (raw.file_type || EXT_TYPE[ext] || ext || "file").toLowerCase();
   const file_path = raw.file_path || `/artifacts/${name}`;
   return {
-    id: raw.id ?? `${file_path}-${name}`,
+    id: raw.id ?? raw.artifact_id ?? `${file_path}-${name}`,
+    artifact_id: raw.artifact_id,
     file_name: name,
     file_path,
     file_type,
     file_size: raw.file_size ?? 0,
+    mime_type: raw.mime_type,
+    provider: raw.provider,
+    workspace_id: raw.workspace_id,
+    status: raw.status,
+    thumbnail: raw.thumbnail,
     created_at: raw.created_at,
     source: raw.source ?? "api",
   };

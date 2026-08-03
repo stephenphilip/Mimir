@@ -1,4 +1,4 @@
-import { Download, ExternalLink, FileSpreadsheet, FileText, FileArchive, Image as ImageIcon } from "lucide-react";
+import { Download, ExternalLink, FileSpreadsheet, FileText, FileArchive, Image as ImageIcon, Presentation } from "lucide-react";
 import type { Artifact } from "../types";
 import { api } from "../api/client";
 import { artifactLabel } from "../utils/artifacts";
@@ -6,9 +6,11 @@ import { formatBytes } from "../utils/format";
 
 function iconFor(type: string) {
   const t = type.toLowerCase();
-  if (["png", "jpg", "jpeg", "webp"].includes(t)) return ImageIcon;
+  if (["png", "jpg", "jpeg", "webp", "image"].includes(t)) return ImageIcon;
   if (["xlsx", "xls", "csv"].includes(t)) return FileSpreadsheet;
+  if (["pptx", "ppt"].includes(t)) return Presentation;
   if (t === "zip") return FileArchive;
+  if (["docx", "doc", "md", "markdown", "txt"].includes(t)) return FileText;
   return FileText;
 }
 
@@ -34,7 +36,8 @@ export function ArtifactCard({ artifact }: Props) {
             {artifact.file_name}
           </span>
           <span className="artifact-sub">
-            Generated successfully
+            {artifact.provider ? `${artifact.provider} · ` : ""}
+            {artifact.status === "ready" ? "Ready" : artifact.status || "Generated"}
             {artifact.file_size > 0 ? ` · ${formatBytes(artifact.file_size)}` : ""}
             {artifact.created_at ? ` · ${new Date(artifact.created_at).toLocaleString()}` : ""}
           </span>
@@ -43,7 +46,11 @@ export function ArtifactCard({ artifact }: Props) {
 
       {isImage && (
         <div className="artifact-preview">
-          <img src={url} alt={artifact.file_name} loading="lazy" />
+          <img
+            src={artifact.thumbnail ? api.artifactUrl(artifact.thumbnail) : url}
+            alt={artifact.file_name}
+            loading="lazy"
+          />
         </div>
       )}
 

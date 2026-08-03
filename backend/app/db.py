@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Float
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Float, Boolean, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 
@@ -24,11 +24,23 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Workspace(Base):
+    __tablename__ = "workspaces"
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, default="Default Workspace")
+    model = Column(String, nullable=True)
+    settings_json = Column(Text, nullable=True)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     id = Column(String, primary_key=True, index=True)
     title = Column(String, default="New Conversation")
     user_id = Column(Integer, ForeignKey("users.id"))
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -86,14 +98,42 @@ class Setting(Base):
 class GeneratedArtifact(Base):
     __tablename__ = "generated_artifacts"
     id = Column(Integer, primary_key=True, index=True)
+    artifact_uuid = Column(String, unique=True, index=True, nullable=True)
     message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
     file_name = Column(String)
     file_path = Column(String)
     file_type = Column(String)
     file_size = Column(Integer)
+    mime_type = Column(String, nullable=True)
+    provider = Column(String, nullable=True)
+    status = Column(String, default="ready")
+    thumbnail_path = Column(String, nullable=True)
+    # Artifact Intelligence
+    original_prompt = Column(Text, nullable=True)
+    enhanced_prompt = Column(Text, nullable=True)
+    execution_plan_json = Column(Text, nullable=True)
+    model_name = Column(String, nullable=True)
+    intelligence_json = Column(Text, nullable=True)
+    version = Column(Integer, default=1)
+    validation_status = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     message = relationship("Message", back_populates="artifacts")
+
+
+class ManagedFile(Base):
+    __tablename__ = "managed_files"
+    id = Column(String, primary_key=True, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), index=True)
+    file_name = Column(String)
+    file_path = Column(String)
+    mime_type = Column(String)
+    file_size = Column(Integer, default=0)
+    source = Column(String, default="upload")  # upload | generated
+    pinned = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Download(Base):
@@ -169,8 +209,47 @@ def ensure_db_ready() -> None:
     _db_initialized = True
 
 
+def _migrate_schema(eng) -> None:
+    """Add columns/tables for existing SQLite databases without Alembic."""
+    with eng.connect() as conn:
+        def _columns(table: str) -> set:
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            return {r[1] for r in rows}
+
+        artifact_cols = {
+            "artifact_uuid": "VARCHAR",
+            "workspace_id": "VARCHAR",
+            "mime_type": "VARCHAR",
+            "provider": "VARCHAR",
+            "status": "VARCHAR DEFAULT 'ready'",
+            "thumbnail_path": "VARCHAR",
+            "original_prompt": "TEXT",
+            "enhanced_prompt": "TEXT",
+            "execution_plan_json": "TEXT",
+            "model_name": "VARCHAR",
+            "intelligence_json": "TEXT",
+            "version": "INTEGER DEFAULT 1",
+            "validation_status": "VARCHAR",
+        }
+        if "generated_artifacts" in eng.dialect.get_table_names(conn):
+            existing = _columns("generated_artifacts")
+            for col, col_type in artifact_cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE generated_artifacts ADD COLUMN {col} {col_type}"))
+
+        conv_cols = {"workspace_id": "VARCHAR"}
+        if "conversations" in eng.dialect.get_table_names(conn):
+            existing = _columns("conversations")
+            for col, col_type in conv_cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE conversations ADD COLUMN {col} {col_type}"))
+        conn.commit()
+
+
 def init_db() -> None:
     """Create schema and seed default user/settings (idempotent)."""
+    import uuid
+
     from config.paths import get_paths
     from config.settings import get_settings
 
@@ -180,6 +259,7 @@ def init_db() -> None:
 
     eng = _get_engine()
     Base.metadata.create_all(bind=eng)
+    _migrate_schema(eng)
 
     assert _SessionLocal is not None
     db = _SessionLocal()
@@ -197,6 +277,23 @@ def init_db() -> None:
         for k, v in defaults.items():
             if not db.query(Setting).filter(Setting.key == k).first():
                 db.add(Setting(key=k, value=v))
+
+        # Keep execution_env aligned with the venv that has fpdf/pandas
+        from config.python_env import resolve_python_executable, venv_dir_for_python
+
+        resolved = venv_dir_for_python(resolve_python_executable())
+        env_row = db.query(Setting).filter(Setting.key == "execution_env").first()
+        if env_row and env_row.value != str(resolved):
+            env_row.value = str(resolved)
+
+        if not db.query(Workspace).first():
+            default_ws = Workspace(
+                id=str(uuid.uuid4()),
+                name="Default Workspace",
+                is_default=True,
+            )
+            db.add(default_ws)
+
         db.commit()
     finally:
         db.close()

@@ -1,39 +1,25 @@
 from typing import List, Dict, Any
 
 from ..interfaces.services import ICapabilityService
+from ..intelligence.capability_registry import get_capability_registry
+
 
 class CapabilityService(ICapabilityService):
-    def __init__(self):
-        # Maps intents to required system capabilities
-        self.capability_map = {
-            "document_generation": ["reasoning", "python_execution", "pdf_generation"],
-            "spreadsheet_generation": ["reasoning", "python_execution", "excel_generation"],
-            "data_visualization": ["reasoning", "python_execution", "chart_generation"],
-            "code_generation": ["reasoning", "coding", "python_execution"],
-            "translation": ["reasoning", "translation"],
-            "writing": ["reasoning", "text_processing"],
-            "general_reasoning": ["reasoning"],
-        }
+    """
+    Capability routing is registry-driven.
+
+    Architectural decision: no hardcoded capability maps — all intent→capability
+    resolution goes through CapabilityRegistry (packs can extend it).
+    """
+
+    def __init__(self, registry=None):
+        self._registry = registry or get_capability_registry()
 
     def resolve(self, intent: str) -> List[str]:
-        # Return capabilities required for a given intent
-        return self.capability_map.get(intent, ["reasoning"])
+        return self._registry.resolve_for_intent(intent)
 
     def get_execution_requirements(self, capabilities: List[str]) -> Dict[str, Any]:
-        # Determine execution runtime and package requirements
-        requirements = {
-            "runtime": "python" if "python_execution" in capabilities else None,
-            "packages": []
-        }
-        
-        if "excel_generation" in capabilities:
-            requirements["packages"].extend(["pandas", "openpyxl"])
-        if "chart_generation" in capabilities:
-            requirements["packages"].extend(["matplotlib", "seaborn", "pandas"])
-        if "pdf_generation" in capabilities:
-            requirements["packages"].extend(["fpdf"])
+        return self._registry.get_execution_requirements(capabilities)
 
-            
-        # Deduplicate packages
-        requirements["packages"] = list(set(requirements["packages"]))
-        return requirements
+    def workflow_for_intent(self, intent: str) -> str:
+        return self._registry.workflow_for_intent(intent)

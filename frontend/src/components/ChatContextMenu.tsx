@@ -1,7 +1,9 @@
 import {
   Archive,
   FolderInput,
+  Plus,
   MoreHorizontal,
+  Search,
   Pencil,
   Pin,
   Share2,
@@ -15,6 +17,8 @@ import type { Project } from "../utils/workspace";
 interface Props {
   conv: Conversation;
   projects: Project[];
+  onNewChat: () => void;
+  onFocusChatSearch: () => void;
   onPin: () => void;
   onArchive: () => void;
   onRename: () => void;
@@ -27,6 +31,8 @@ interface Props {
 export function ChatContextMenu({
   conv,
   projects,
+  onNewChat,
+  onFocusChatSearch,
   onPin,
   onArchive,
   onRename,
@@ -80,6 +86,28 @@ export function ChatContextMenu({
 
       {open && (
         <div className="chat-menu-popover" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onNewChat();
+              setOpen(false);
+            }}
+          >
+            <Plus size={14} /> New chat
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onFocusChatSearch();
+              setOpen(false);
+            }}
+          >
+            <Search size={14} /> Search chats
+          </button>
+
           <button type="button" role="menuitem" onClick={() => { onShare(); setOpen(false); }}>
             <Share2 size={14} /> Share
           </button>

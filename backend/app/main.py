@@ -4,11 +4,36 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from config.paths import get_paths
 from config.settings import get_settings
 from runtime.runtime_coordinator import get_runtime
+
+
+def _load_mimir_env() -> None:
+    import os
+    from pathlib import Path
+
+    root = get_paths().repo_root
+    for name in ("mimir.env", ".env"):
+        env_file = root / name
+        if not env_file.is_file():
+            continue
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        break
+
+
+_load_mimir_env()
+get_settings.cache_clear()
 
 from .db import SessionLocal, ensure_db_ready
 from .repositories.sqlite_repositories import (
@@ -28,11 +53,14 @@ from .services.execution_engine import ExecutionEngine
 from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
 from .core.orchestrator import Orchestrator
+from .api.platform import router as platform_router
+from .creator.factory import build_creator_engine
 
 # Architectural decision: do NOT init DB or contact Ollama at import time.
 # Config is imported above (cheap); dirs/DB/plugins load in startup_event.
 
 app = FastAPI(title="AI-Native Personal Assistant Platform")
+app.include_router(platform_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,12 +196,17 @@ def shutdown_event():
 class ChatRequest(BaseModel):
     conversation_id: str
     prompt: str
+    workspace_id: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
-    user_name: str
-    personality: str
-    theme: str
+    user_name: Optional[str] = None
+    personality: Optional[str] = None
+    theme: Optional[str] = None
+    ui_responsive_layout: Optional[str] = None
+    prompt_studio_default: Optional[str] = None
+    developer_tools_enabled: Optional[str] = None
+    show_runtime_task_manager: Optional[str] = None
 
 
 def stream_with_cleanup(generator, db: Session):
@@ -205,6 +238,7 @@ def chat(req: ChatRequest):
     conv_repo = SQLiteConversationRepository(db)
     mem_repo = SQLiteMemoryRepository(db)
     art_repo = SQLiteArtifactRepository(db)
+    creator_engine, _artifact_manager = build_creator_engine(art_repo)
 
     runtime, model_repo, setting_repo = _build_runtime_for_request(db)
 
@@ -224,6 +258,7 @@ def chat(req: ChatRequest):
             art_repo,
             setting_repo,
             str(paths.workspace_dir),
+            creator_engine=creator_engine,
         )
 
     execution_engine = ExecutionEngine(art_repo, executor_factory=executor_factory)
@@ -239,14 +274,24 @@ def chat(req: ChatRequest):
         runtime=runtime,
         conversation_repo=conv_repo,
         model_repo=model_repo,
+        creator_engine=creator_engine,
     )
 
     conv = conv_repo.get_by_id(req.conversation_id)
     if not conv:
         conv_repo.create(req.conversation_id, "New Chat", 1)
 
+    # Pass workspace_id through orchestrator via a wrapper generator
+    def _stream():
+        for chunk in orchestrator.process_prompt(
+            req.conversation_id,
+            req.prompt,
+            workspace_id=req.workspace_id,
+        ):
+            yield chunk
+
     return StreamingResponse(
-        stream_with_cleanup(orchestrator.process_prompt(req.conversation_id, req.prompt), db),
+        stream_with_cleanup(_stream(), db),
         media_type="text/event-stream"
     )
 
@@ -295,10 +340,17 @@ def get_messages(conv_id: str, db: Session = Depends(get_db)):
             "created_at": msg.created_at,
             "artifacts": [{
                 "id": a.id,
+                "artifact_id": getattr(a, "artifact_uuid", None) or a.id,
                 "file_name": a.file_name,
                 "file_path": a.file_path,
                 "file_type": a.file_type,
-                "file_size": a.file_size
+                "file_size": a.file_size,
+                "mime_type": getattr(a, "mime_type", None),
+                "provider": getattr(a, "provider", None),
+                "workspace_id": getattr(a, "workspace_id", None),
+                "status": getattr(a, "status", "ready"),
+                "thumbnail": getattr(a, "thumbnail_path", None),
+                "created_at": a.created_at.isoformat() if a.created_at else None,
             } for a in artifacts]
         })
     return result
@@ -314,10 +366,13 @@ def get_settings_api(db: Session = Depends(get_db)):
 def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
     setting_repo = SQLiteSettingRepository(db)
     for key, val in settings.dict().items():
-        setting_repo.save(key, val)
+        if val is None:
+            continue
+        setting_repo.save(key, str(val))
 
     mem_repo = SQLiteMemoryRepository(db)
-    mem_repo.save_user_name(1, settings.user_name)
+    if settings.user_name is not None:
+        mem_repo.save_user_name(1, settings.user_name)
 
     return {"status": "success"}
 

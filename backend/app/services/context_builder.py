@@ -41,18 +41,38 @@ class ContextBuilder(IContextBuilder):
             system_prompt += "\nRetrieved user memories & profile facts:\n"
             system_prompt += "\n".join([f"- {m}" for m in formatted_memories]) + "\n"
 
-        if "python_execution" in context.capabilities:
+        vision_ctx = context.execution_metadata.get("vision_context")
+        if vision_ctx:
+            system_prompt += f"\n{vision_ctx}\n"
+
+        workflow = context.execution_metadata.get("workflow") or "chat"
+
+        if workflow == "structured_document":
             system_prompt += (
-                "\nIMPORTANT: To solve spreadsheet, csv, charts, pdf, document, workout plan, or math tasks, "
+                "\nIMPORTANT — DOCUMENT WORKFLOW:\n"
+                "You generate DOCUMENT CONTENT ONLY as JSON. Do NOT write Python. Do NOT use fpdf.\n"
+                "The platform will render PDF/DOCX/Markdown from your JSON.\n"
+                "Return ONLY valid JSON with this shape:\n"
+                '{"title":"...","summary":"...","sections":[{"heading":"...","body":"...","bullets":["..."]}]}\n'
+                "Fill sections with real useful content for the user's request. "
+                "No fake download links. No code fences required but allowed."
+            )
+        elif "python_execution" in context.capabilities or "python" in context.capabilities:
+            system_prompt += (
+                "\nIMPORTANT: To solve spreadsheet, csv, charts, or math tasks, "
                 "you MUST write executable Python code inside a ```python ... ``` code block. "
-                "For PDFs use the fpdf library (from fpdf import FPDF). "
                 "For Excel use pandas/openpyxl. For charts use matplotlib. "
                 "All files MUST be saved to the current working directory with real filenames "
-                "(e.g. leg_day_workout.pdf, expense_tracker.xlsx). "
-                "Do NOT refuse to generate PDFs or documents — create them with code. "
+                "(e.g. expense_tracker.xlsx). "
                 "Print a short success message listing the exact filenames created. "
                 "NEVER write fake placeholders such as [Download PDF] — the UI shows download cards automatically. "
                 "Keep commentary brief; prioritize correct working code."
+            )
+        elif workflow == "image":
+            system_prompt += (
+                "\nIMPORTANT — IMAGE WORKFLOW:\n"
+                "Describe the image to generate briefly. The platform handles image providers. "
+                "Do not invent download URLs."
             )
 
         context.execution_metadata["system_prompt"] = system_prompt
@@ -60,8 +80,6 @@ class ContextBuilder(IContextBuilder):
         if context.conversation and "id" in context.conversation:
             conv_id = context.conversation["id"]
             recent_messages = self.memory_service.get_recent_context(conv_id, limit=6)
-            # The orchestrator already saved the current user turn — drop it so we don't
-            # duplicate the latest prompt (a major cause of stuck/repeated answers).
             current = (context.prompt or "").strip()
             if (
                 recent_messages
@@ -69,7 +87,6 @@ class ContextBuilder(IContextBuilder):
                 and (recent_messages[-1].get("content") or "").strip() == current
             ):
                 recent_messages = recent_messages[:-1]
-            # Keep at most 2 prior turns (4 messages) for focus + speed
             recent_messages = recent_messages[-4:]
             context.retrieved_conversation_context = recent_messages
         else:

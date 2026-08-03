@@ -11,6 +11,8 @@ import {
   Sparkles,
   Folder,
   Pencil,
+  FolderOpen,
+  Activity,
 } from "lucide-react";
 import type { Conversation, NavView } from "../types";
 import type { Project } from "../utils/workspace";
@@ -23,6 +25,7 @@ interface Props {
   activeConvId: string;
   onSelectChat: (id: string) => void;
   onNewChat: () => void;
+  onFocusChatSearch: () => void;
   onDeleteChat: (id: string) => void;
   search: string;
   onSearchChange: (value: string) => void;
@@ -42,8 +45,10 @@ interface Props {
 const NAV: { id: NavView; label: string; icon: typeof Home; soon?: boolean }[] = [
   { id: "home", label: "Home", icon: Home },
   { id: "chats", label: "Chats", icon: MessageSquare },
+  { id: "files", label: "Files", icon: FolderOpen },
   { id: "models", label: "Models", icon: Box },
-  { id: "marketplace", label: "Marketplace", icon: Store, soon: true },
+  { id: "runtime", label: "Runtime", icon: Activity },
+  { id: "marketplace", label: "Marketplace", icon: Store },
   { id: "memory", label: "Memory", icon: Brain, soon: true },
   { id: "settings", label: "Settings", icon: Settings },
 ];
@@ -55,6 +60,7 @@ export function Sidebar({
   activeConvId,
   onSelectChat,
   onNewChat,
+  onFocusChatSearch,
   onDeleteChat,
   search,
   onSearchChange,
@@ -147,6 +153,8 @@ export function Sidebar({
                   onSelectChat(c.id);
                   onNavigate("chats");
                 }}
+                onNewChat={onNewChat}
+                onFocusChatSearch={onFocusChatSearch}
                 onDelete={() => onDeleteChat(c.id)}
                 onPin={() => onPinChat(c.id)}
                 onArchive={() => onArchiveChat(c.id)}
@@ -221,6 +229,8 @@ export function Sidebar({
                   onSelectChat(c.id);
                   onNavigate("chats");
                 }}
+                onNewChat={onNewChat}
+                onFocusChatSearch={onFocusChatSearch}
                 onDelete={() => onDeleteChat(c.id)}
                 onPin={() => onPinChat(c.id)}
                 onArchive={() => onArchiveChat(c.id)}
@@ -242,6 +252,8 @@ function ChatRow({
   projects,
   active,
   onSelect,
+  onNewChat,
+  onFocusChatSearch,
   onDelete,
   onPin,
   onArchive,
@@ -254,6 +266,8 @@ function ChatRow({
   projects: Project[];
   active: boolean;
   onSelect: () => void;
+  onNewChat: () => void;
+  onFocusChatSearch: () => void;
   onDelete: () => void;
   onPin: () => void;
   onArchive: () => void;
@@ -271,6 +285,8 @@ function ChatRow({
       <ChatContextMenu
         conv={conv}
         projects={projects}
+        onNewChat={onNewChat}
+        onFocusChatSearch={onFocusChatSearch}
         onPin={onPin}
         onArchive={onArchive}
         onRename={onRename}

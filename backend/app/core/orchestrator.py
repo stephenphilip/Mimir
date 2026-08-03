@@ -35,6 +35,7 @@ class Orchestrator:
         model_repo: IModelRepository,
         # Backward-compatible alias: older callers may still pass model_service
         model_service: Optional[Any] = None,
+        creator_engine: Optional[Any] = None,
     ):
         self.intent_service = intent_service
         self.capability_service = capability_service
@@ -45,6 +46,7 @@ class Orchestrator:
         self.planner = planner
         self.conversation_repo = conversation_repo
         self.model_repo = model_repo
+        self.creator_engine = creator_engine
 
         if runtime is not None:
             self.runtime = runtime
@@ -54,7 +56,12 @@ class Orchestrator:
         else:
             raise TypeError("Orchestrator requires runtime (or model_service for compatibility)")
 
-    def process_prompt(self, conversation_id: str, prompt: str) -> Generator[str, None, None]:
+    def process_prompt(
+        self,
+        conversation_id: str,
+        prompt: str,
+        workspace_id: Optional[str] = None,
+    ) -> Generator[str, None, None]:
         """Stream orchestration steps as JSON event strings."""
         from config.settings import get_settings
 
@@ -65,6 +72,8 @@ class Orchestrator:
             # 1. Initialize ExecutionContext
             context = ExecutionContext(prompt=prompt)
             context.execution_status = "running"
+            if workspace_id:
+                context.execution_metadata["workspace_id"] = workspace_id
 
             # Load conversation
             conv = self.conversation_repo.get_by_id(conversation_id)
@@ -102,7 +111,23 @@ class Orchestrator:
             })
 
             # 5. Planner
-            self.planner.create_plan(context)
+            plan = self.planner.create_plan(context)
+            yield _sse({
+                "type": "execution_plan",
+                "plan": {
+                    "workflow": getattr(plan, "workflow", None),
+                    "intent": getattr(plan, "intent", None),
+                    "preferred_artifact": getattr(plan, "preferred_artifact", None),
+                    "steps": plan.steps if hasattr(plan, "steps") else [],
+                },
+            })
+            yield _sse({
+                "type": "status",
+                "status": "Plan: {} ({} steps)".format(
+                    getattr(plan, "workflow", "chat"),
+                    len(plan.steps) if hasattr(plan, "steps") else 0,
+                ),
+            })
 
             # 6. Context Builder (memory initializes lazily on first use here)
             self.context_builder.build_context(context)
@@ -222,11 +247,44 @@ class Orchestrator:
             )
             context.execution_metadata["assistant_message_id"] = assistant_message.id
 
-            # 11. Tool Execution Pipeline (plugins import lazily inside the engine)
-            if "python_execution" in context.capabilities:
+            # 11. Tool Execution Pipeline
+            workflow = context.execution_metadata.get("workflow") or "chat"
+
+            if workflow == "structured_document":
+                yield _sse({"type": "execution_status", "status": "generating"})
+                yield _sse({"type": "status", "status": "Rendering structured document..."})
+                from ..intelligence.document_workflow import DocumentWorkflow
+
+                doc_workflow = DocumentWorkflow(creator_engine=self.creator_engine)
+                artifact_type = context.execution_metadata.get("preferred_artifact") or "pdf"
+                exec_result = doc_workflow.execute(
+                    llm_content=assistant_content,
+                    user_prompt=prompt,
+                    artifact_type=artifact_type,
+                    workspace_id=context.execution_metadata.get("workspace_id"),
+                    message_id=assistant_message.id,
+                    original_prompt=prompt,
+                    execution_plan=context.execution_metadata.get("workflow_plan"),
+                )
+                final_status = "completed" if exec_result.get("success") else "failed"
+                yield _sse({"type": "execution_status", "status": final_status})
+                yield _sse({
+                    "type": "execution_result",
+                    "success": exec_result["success"],
+                    "stdout": exec_result.get("stdout", ""),
+                    "stderr": exec_result.get("stderr", ""),
+                    "exit_code": exec_result.get("exit_code", 0),
+                    "artifacts": exec_result.get("artifacts", []),
+                    "execution_status": final_status,
+                    "workflow": "structured_document",
+                })
+            elif "python_execution" in context.capabilities or "python" in context.capabilities:
+                yield _sse({"type": "execution_status", "status": "generating"})
                 yield _sse({"type": "status", "status": "Executing generated python code..."})
 
                 exec_result = self.execution_engine.execute(context)
+                final_status = "completed" if exec_result.get("success") else "failed"
+                yield _sse({"type": "execution_status", "status": final_status})
                 yield _sse({
                     "type": "execution_result",
                     "success": exec_result["success"],
@@ -234,6 +292,7 @@ class Orchestrator:
                     "stderr": exec_result["stderr"],
                     "exit_code": exec_result["exit_code"],
                     "artifacts": exec_result["artifacts"],
+                    "execution_status": final_status,
                 })
 
             new_title = prompt[:30] + "..." if len(prompt) > 30 else prompt

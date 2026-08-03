@@ -4,9 +4,14 @@ import { CursorGlow } from "./components/CursorGlow";
 import { ChatWindow, type ChatWindowHandle } from "./components/ChatWindow";
 import { ComingSoon } from "./components/ComingSoon";
 import { DownloadTray } from "./components/DownloadTray";
+import { FileManagerView } from "./components/FileManagerView";
 import { Greeting } from "./components/Greeting";
-import { ModelsView } from "./components/ModelsView";
+import { MarketplaceView } from "./components/MarketplaceView";
+import { ModelDashboardView } from "./components/ModelDashboardView";
 import { PromptInput } from "./components/PromptInput";
+import { buildPromptWithAttachments } from "./components/FileUploader";
+import { PromptStudio } from "./components/PromptStudio";
+import { RuntimeDashboardView } from "./components/RuntimeDashboardView";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -16,6 +21,7 @@ import type {
   ExecutionResult,
   Message,
   NavView,
+  PromptStudioResult,
   SystemStatus,
 } from "./types";
 import {
@@ -49,6 +55,16 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => loadWorkspace());
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [promptStudioEnabled, setPromptStudioEnabled] = useState(false);
+  const [promptStudioOpen, setPromptStudioOpen] = useState(false);
+  const [promptStudioLoading, setPromptStudioLoading] = useState(false);
+  const [promptStudioResult, setPromptStudioResult] = useState<PromptStudioResult | null>(null);
+  const [pendingStudioPrompt, setPendingStudioPrompt] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState<string | null>(
+    null
+  );
 
   const persistWorkspace = (next: WorkspaceState) => {
     setWorkspace(next);
@@ -65,6 +81,11 @@ export default function App() {
     "helpful, concise expert data analyst and assistant"
   );
   const [theme, setTheme] = useState("dark");
+  const [responsiveLayoutEnabled, setResponsiveLayoutEnabled] = useState(true);
+  const [promptStudioDefault, setPromptStudioDefault] = useState(false);
+  const [developerToolsEnabled, setDeveloperToolsEnabled] = useState(false);
+  const [showRuntimeTaskManager, setShowRuntimeTaskManager] = useState(false);
+  const [researchModeEnabled, setResearchModeEnabled] = useState(false);
 
   const [pipeline, setPipeline] = useState<string[]>([]);
   const [streamText, setStreamText] = useState("");
@@ -141,8 +162,49 @@ export default function App() {
       if (data.user_name) setUserName(data.user_name);
       if (data.personality) setPersonality(data.personality);
       if (data.theme) setTheme(data.theme);
+      const parseBool = (v?: string) =>
+        String(v || "").trim().toLowerCase() === "true";
+      if (data.ui_responsive_layout != null) {
+        setResponsiveLayoutEnabled(parseBool(data.ui_responsive_layout));
+      }
+      if (data.prompt_studio_default != null) {
+        const next = parseBool(data.prompt_studio_default);
+        setPromptStudioDefault(next);
+        setPromptStudioEnabled(next);
+      }
+      if (data.developer_tools_enabled != null) {
+        setDeveloperToolsEnabled(parseBool(data.developer_tools_enabled));
+      }
+      if (data.show_runtime_task_manager != null) {
+        setShowRuntimeTaskManager(
+          parseBool(data.show_runtime_task_manager) &&
+            parseBool(data.developer_tools_enabled)
+        );
+      }
     } catch (err) {
       console.error(err);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Toggle a global class to reflow the desktop layout on smaller window sizes.
+    if (responsiveLayoutEnabled) {
+      document.body.classList.add("ui-responsive");
+    } else {
+      document.body.classList.remove("ui-responsive");
+    }
+  }, [responsiveLayoutEnabled]);
+
+  const fetchWorkspaces = useCallback(async () => {
+    try {
+      const data = await api.getWorkspaces();
+      setActiveWorkspaceId((prev) => {
+        if (prev) return prev;
+        const def = data.find((w) => w.is_default) || data[0];
+        return def?.id ?? null;
+      });
+    } catch {
+      /* keep default null */
     }
   }, []);
 
@@ -150,9 +212,10 @@ export default function App() {
     void fetchConversations();
     void fetchSystemStatus();
     void fetchSettings();
+    void fetchWorkspaces();
     const id = window.setInterval(() => void fetchSystemStatus(), 5000);
     return () => window.clearInterval(id);
-  }, [fetchConversations, fetchSystemStatus, fetchSettings]);
+  }, [fetchConversations, fetchSystemStatus, fetchSettings, fetchWorkspaces]);
 
   useEffect(() => {
     if (activeConvId && view === "chats") {
@@ -209,6 +272,29 @@ export default function App() {
     const convId = await ensureConversation();
     if (!convId) return;
 
+    const RESEARCH_MARKER = "[[RESEARCH_MODE]]";
+    const RESEARCH_INSTRUCTION = [
+      "Research Mode: Focus entirely on researching and producing an evidence-backed, deeply structured answer.",
+      "If you cannot access web browsing or external sources, clearly state that and rely on internal knowledge; mark uncertain claims as uncertain.",
+      "Include: (1) assumptions, (2) research plan, (3) detailed findings, (4) risks/limitations, (5) next steps."
+    ].join(" ");
+
+    const applyResearchMode = (p: string) => {
+      if (p.startsWith(RESEARCH_MARKER)) return p; // already wrapped (e.g. retry)
+      if (!researchModeEnabled) return p;
+      return `${RESEARCH_MARKER}\n${RESEARCH_INSTRUCTION}\n\n${p}`;
+    };
+
+    const stripResearchForDisplay = (p: string) => {
+      if (!p.startsWith(RESEARCH_MARKER)) return p;
+      const rest = p.slice(RESEARCH_MARKER.length).replace(/^\s*\n/, "");
+      const parts = rest.split("\n\n");
+      if (parts.length >= 2) return parts.slice(1).join("\n\n");
+      return p;
+    };
+
+    const effectivePrompt = applyResearchMode(finalPrompt);
+
     setView("chats");
     setPrompt("");
     setFiles([]);
@@ -218,8 +304,10 @@ export default function App() {
     setStreamText("");
     setStreamExecution(null);
 
-    const userVisible = finalPrompt.split("\n\n--- Attached file:")[0].trim() || finalPrompt;
-    promptHistory.current = [...promptHistory.current, finalPrompt];
+    const userVisible = stripResearchForDisplay(finalPrompt)
+      .split("\n\n--- Attached file:")[0]
+      .trim() || stripResearchForDisplay(finalPrompt);
+    promptHistory.current = [...promptHistory.current, effectivePrompt];
     setMessages((prev) => [...prev, { sender: "user", content: userVisible }]);
 
     // Locals avoid stale closures and preserve artifacts across "done"
@@ -228,7 +316,11 @@ export default function App() {
     const statusAcc: string[] = [];
 
     try {
-      const response = await api.chatStream(convId, finalPrompt);
+      const response = await api.chatStream(
+        convId,
+        effectivePrompt,
+        activeWorkspaceId || undefined
+      );
       if (!response.body) throw new Error("No response stream");
 
       const reader = response.body.getReader();
@@ -458,9 +550,78 @@ export default function App() {
     setView("chats");
   };
 
+  const focusChatSearch = () => {
+    // Keep chat context, but expose chat search immediately (developer UX).
+    setView("chats");
+    window.setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>(
+        "aside .side-search input"
+      );
+      el?.focus();
+      el?.select?.();
+    }, 0);
+  };
+
+  const openPromptStudio = async () => {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    const withFiles = buildPromptWithAttachments(trimmed, files);
+    setPendingStudioPrompt(withFiles);
+    setPromptStudioOpen(true);
+    setPromptStudioLoading(true);
+    setPromptStudioResult(null);
+    try {
+      const result = await api.enhancePrompt(trimmed);
+      setPromptStudioResult(result);
+    } catch {
+      setPromptStudioResult({
+        original: trimmed,
+        variants: [
+          { id: "professional", label: "Professional", prompt: trimmed },
+          { id: "creative", label: "Creative", prompt: trimmed },
+          { id: "technical", label: "Technical", prompt: trimmed },
+        ],
+      });
+    } finally {
+      setPromptStudioLoading(false);
+    }
+  };
+
+  const closePromptStudio = () => {
+    setPromptStudioOpen(false);
+    setPromptStudioResult(null);
+    setPendingStudioPrompt("");
+  };
+
+  const sendFromStudio = (chosen: string) => {
+    closePromptStudio();
+    setPrompt("");
+    setFiles([]);
+    void handleSend(chosen);
+  };
+
   const saveSettings = async (e: FormEvent) => {
     e.preventDefault();
-    await api.saveSettings({ user_name: userName, personality, theme });
+    setSettingsSaving(true);
+    setSettingsSaveMessage("Saving…");
+    await api.saveSettings({
+      user_name: userName,
+      personality,
+      theme,
+      ui_responsive_layout: String(responsiveLayoutEnabled),
+      prompt_studio_default: String(promptStudioDefault),
+      developer_tools_enabled: String(developerToolsEnabled),
+      show_runtime_task_manager: String(showRuntimeTaskManager),
+    })
+      .then(() => {
+        setSettingsSaveMessage("Saved ✓");
+        setTimeout(() => setSettingsSaveMessage(null), 2000);
+      })
+      .catch((err) => {
+        console.error(err);
+        setSettingsSaveMessage("Save failed. Please try again.");
+      })
+      .finally(() => setSettingsSaving(false));
   };
 
   const showHomeComposer = view === "home";
@@ -487,6 +648,7 @@ export default function App() {
           setView("chats");
         }}
         onNewChat={() => void handleCreateChat()}
+        onFocusChatSearch={focusChatSearch}
         onDeleteChat={(id) => void handleDeleteChat(id)}
         search={search}
         onSearchChange={setSearch}
@@ -538,13 +700,14 @@ export default function App() {
             </div>
           )}
 
-          {view === "models" && <ModelsView status={systemStatus} />}
-          {view === "marketplace" && (
-            <ComingSoon
-              title="Marketplace"
-              blurb="Install community skills and extensions without leaving Mimir."
+          {view === "models" && <ModelDashboardView status={systemStatus} />}
+          {view === "files" && <FileManagerView workspaceId={activeWorkspaceId} />}
+          {view === "runtime" && (
+            <RuntimeDashboardView
+              showRuntimeTaskManager={showRuntimeTaskManager}
             />
           )}
+          {view === "marketplace" && <MarketplaceView />}
           {view === "memory" && (
             <ComingSoon
               title="Memory"
@@ -556,9 +719,22 @@ export default function App() {
               userName={userName}
               personality={personality}
               theme={theme}
+              responsiveLayoutEnabled={responsiveLayoutEnabled}
+              promptStudioDefault={promptStudioDefault}
+              developerToolsEnabled={developerToolsEnabled}
+              showRuntimeTaskManager={showRuntimeTaskManager}
+              isSaving={settingsSaving}
+              saveMessage={settingsSaveMessage}
               onUserName={setUserName}
               onPersonality={setPersonality}
               onTheme={setTheme}
+              onResponsiveLayoutEnabled={setResponsiveLayoutEnabled}
+              onPromptStudioDefault={(v) => {
+                setPromptStudioDefault(v);
+                setPromptStudioEnabled(v);
+              }}
+              onDeveloperToolsEnabled={setDeveloperToolsEnabled}
+              onShowRuntimeTaskManager={(v) => setShowRuntimeTaskManager(v)}
               onSave={(e) => void saveSettings(e)}
             />
           )}
@@ -574,12 +750,29 @@ export default function App() {
               onSend={(p) => void handleSend(p)}
               disabled={isGenerating}
               compact={showChatComposer}
+              promptStudioEnabled={promptStudioEnabled}
+              onPromptStudioToggle={setPromptStudioEnabled}
+              onOpenPromptStudio={() => void openPromptStudio()}
+              researchModeEnabled={researchModeEnabled}
+              onResearchModeToggle={setResearchModeEnabled}
             />
           </div>
         )}
 
         <StatusBar status={systemStatus} currentModel={activeModel} connected={connected} />
       </div>
+
+      <PromptStudio
+        open={promptStudioOpen}
+        loading={promptStudioLoading}
+        result={promptStudioResult}
+        onClose={closePromptStudio}
+        onUseOriginal={() => sendFromStudio(pendingStudioPrompt || prompt)}
+        onReplace={(p) => {
+          setPrompt(p);
+          sendFromStudio(buildPromptWithAttachments(p, files));
+        }}
+      />
     </div>
   );
 }

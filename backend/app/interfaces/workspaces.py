@@ -59,7 +59,13 @@ class IFileRepository(ABC):
         pass
 
     @abstractmethod
-    def update(self, file_id: str, file_name: Optional[str] = None, pinned: Optional[bool] = None) -> Optional[Any]:
+    def update(
+        self,
+        file_id: str,
+        file_name: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        extracted_text: Optional[str] = None,
+    ) -> Optional[Any]:
         pass
 
     @abstractmethod

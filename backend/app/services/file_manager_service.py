@@ -66,6 +66,7 @@ class FileManagerService:
         payload = self._serialize(row, disk_path=str(dest))
 
         # Vision Intelligence — auto-analyze image/PDF uploads (lazy, best-effort)
+        extracted_text = None
         if mime.startswith("image/") or safe_name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".pdf")):
             try:
                 from .vision_service import VisionService
@@ -73,8 +74,21 @@ class FileManagerService:
                 vision = VisionService().analyze_file(str(dest), mime_type=mime)
                 if vision.get("success"):
                     payload["vision"] = vision
+                    extracted_text = vision.get("context") or vision.get("ocr") or ""
             except Exception as exc:
                 payload["vision"] = {"success": False, "error": str(exc)}
+        else:
+            # Text-based file extraction at upload time
+            try:
+                extracted_text = data.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        if extracted_text:
+            try:
+                self._file_repo.update(file_id=file_id, extracted_text=extracted_text)
+            except Exception as exc:
+                print(f"Error persisting extracted text to database: {exc}")
 
         return payload
 

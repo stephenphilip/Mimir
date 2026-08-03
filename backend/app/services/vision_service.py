@@ -103,11 +103,32 @@ class VisionService:
         text = ""
         try:
             from pypdf import PdfReader  # type: ignore
+            from PIL import Image
+            import io
+            import pytesseract
 
             reader = PdfReader(str(path))
             chunks = []
             for page in reader.pages[:5]:
-                chunks.append(page.extract_text() or "")
+                page_text = page.extract_text() or ""
+                page_text = page_text.strip()
+                
+                # Scanned PDF check: if native text is empty/poor and there are embedded images, run OCR
+                if len(page_text) < 20 and page.images:
+                    ocr_chunks = []
+                    for img_obj in page.images:
+                        try:
+                            img_data = img_obj.data
+                            pil_img = Image.open(io.BytesIO(img_data))
+                            ocr_result = pytesseract.image_to_string(pil_img) or ""
+                            if ocr_result.strip():
+                                ocr_chunks.append(ocr_result.strip())
+                        except Exception as e:
+                            print(f"Error OCR-ing page image: {e}")
+                    if ocr_chunks:
+                        page_text = "\n".join(ocr_chunks)
+                
+                chunks.append(page_text)
             text = "\n".join(chunks).strip()
         except ImportError:
             text = ""

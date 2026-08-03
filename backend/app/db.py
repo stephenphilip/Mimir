@@ -154,6 +154,7 @@ class ManagedFile(Base):
     file_size = Column(Integer, default=0)
     source = Column(String, default="upload")  # upload | generated
     pinned = Column(Boolean, default=False)
+    extracted_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -342,6 +343,13 @@ def _migrate_schema(eng) -> None:
             for col, col_type in conv_cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE conversations ADD COLUMN {col} {col_type}"))
+
+        managed_file_cols = {"extracted_text": "TEXT"}
+        if "managed_files" in eng.dialect.get_table_names(conn):
+            existing = _columns("managed_files")
+            for col, col_type in managed_file_cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE managed_files ADD COLUMN {col} {col_type}"))
         conn.commit()
 
 

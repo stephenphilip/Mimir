@@ -37,6 +37,14 @@ class ContextBuilder(IContextBuilder):
                 if not row:
                     continue
                 
+                # Check database cache first!
+                if hasattr(row, "extracted_text") and row.extracted_text:
+                    txt = row.extracted_text
+                    if len(txt) > 8000:
+                        txt = txt[:8000] + "\n... [Content truncated to prevent model context window overflow] ..."
+                    vision_contexts.append(txt)
+                    continue
+
                 # Resolve physical disk path
                 uploads_dir = get_paths().workspace_dir / ".mimir" / "uploads"
                 disk_matches = list(uploads_dir.glob(f"{row.id}_*"))
@@ -48,7 +56,15 @@ class ContextBuilder(IContextBuilder):
                             # Run Vision Service analysis (which uses OCR/pypdf)
                             vision_res = VisionService().analyze_file(str(disk_path), mime_type=row.mime_type)
                             if vision_res.get("success") and vision_res.get("context"):
-                                vision_contexts.append(vision_res["context"])
+                                txt = vision_res["context"]
+                                if len(txt) > 8000:
+                                    txt = txt[:8000] + "\n... [Content truncated to prevent model context window overflow] ..."
+                                vision_contexts.append(txt)
+                                try:
+                                    row.extracted_text = vision_res["context"]
+                                    db.commit()
+                                except Exception:
+                                    pass
                         except Exception as e:
                             print(f"Error analyzing attached file {filename}: {e}")
                     else:
@@ -56,7 +72,15 @@ class ContextBuilder(IContextBuilder):
                         try:
                             file_content = disk_path.read_text(encoding="utf-8", errors="replace")
                             text_ctx = f"--- Content of uploaded file: {filename} ---\n{file_content}\n--- End of file: {filename} ---"
-                            vision_contexts.append(text_ctx)
+                            txt = text_ctx
+                            if len(txt) > 8000:
+                                txt = txt[:8000] + "\n... [Content truncated to prevent model context window overflow] ..."
+                            vision_contexts.append(txt)
+                            try:
+                                row.extracted_text = text_ctx
+                                db.commit()
+                            except Exception:
+                                pass
                         except Exception as e:
                             print(f"Error reading text of attached file {filename}: {e}")
 

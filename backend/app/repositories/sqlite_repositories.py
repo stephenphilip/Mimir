@@ -453,6 +453,7 @@ class SQLiteFileRepository(IFileRepository):
         file_id: str,
         file_name: Optional[str] = None,
         pinned: Optional[bool] = None,
+        extracted_text: Optional[str] = None,
     ) -> Optional[ManagedFile]:
         row = self.get_by_id(file_id)
         if not row:
@@ -461,6 +462,8 @@ class SQLiteFileRepository(IFileRepository):
             row.file_name = file_name
         if pinned is not None:
             row.pinned = pinned
+        if extracted_text is not None:
+            row.extracted_text = extracted_text
         row.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(row)

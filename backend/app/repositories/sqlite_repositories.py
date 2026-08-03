@@ -338,7 +338,6 @@ class SQLiteSettingRepository(ISettingRepository):
             return s
 
 
-<<<<<<< HEAD
 class SQLiteWorkspaceRepository(IWorkspaceRepository):
     def __init__(self, db: Session):
         self.db = db
@@ -474,7 +473,8 @@ class SQLiteFileRepository(IFileRepository):
         self.db.delete(row)
         self.db.commit()
         return True
-=======
+
+
 class SQLiteModelCatalogRepository(IModelCatalogRepository):
     def __init__(self, db: Session):
         self.db = db
@@ -606,5 +606,3 @@ class SQLiteEntityRepository(IEntityRepository):
         self.db.commit()
         self.db.refresh(entity)
         return entity
-
->>>>>>> origin/main

@@ -3,6 +3,15 @@ RuntimeCoordinator — single runtime entry point for Mimir.
 
 Delegates model work to ModelService. Does not contain inference logic.
 Does not replace ModelService or the Orchestrator.
+
+Phase 1 additions:
+  - event_bus: Process-wide EventBus for pub/sub between pipeline steps and agents.
+  - scheduler: Process-wide Scheduler for tracked background jobs (replaces raw threads).
+
+Phase 4+:
+  - Agent Runtime dispatcher will be composed here.
+  - EventBus will carry inter-agent messages.
+  - Scheduler will manage agent sub-task parallelism.
 """
 
 from __future__ import annotations
@@ -18,13 +27,26 @@ from config.settings import Settings, get_settings
 
 from .plugin_loader import PluginLoader
 from .resource_monitor import ResourceMonitor
+# Phase 1: EventBus and Scheduler composed into the runtime singleton
+from ai_runtime.event_bus import EventBus
+from ai_runtime.scheduler import Scheduler
 
 
 class RuntimeCoordinator:
     """
-    Wraps ModelService and owns session/resource/plugin lazy-loading state.
+    Process-wide singleton that composes all AI Runtime infrastructure.
+
+    Owns:
+      - ResourceMonitor  — on-demand hardware sampling
+      - PluginLoader     — manifest-first lazy executor discovery
+      - EventBus         — synchronous pub/sub for pipeline events (Phase 1+)
+      - Scheduler        — background job lifecycle tracking (Phase 1+)
+
+    Delegates model work to ModelService (bound per request).
+    Does not contain inference logic.
 
     Flow: Orchestrator → RuntimeCoordinator → ModelService → Ollama
+    Phase 4: AgentRuntime → RuntimeCoordinator → (EventBus, Scheduler, ModelService)
     """
 
     def __init__(
@@ -37,8 +59,11 @@ class RuntimeCoordinator:
         self.settings = settings or get_settings()
         self.model_service = model_service
 
+        # ── Infrastructure (Phase 1) ─────────────────────────────────
         self.monitor = ResourceMonitor()
         self.plugin_loader = PluginLoader(extensions_dir=self.paths.extensions_dir)
+        self.event_bus = EventBus()    # synchronous pub/sub — Phase 1
+        self.scheduler = Scheduler()   # background job tracker — Phase 1
 
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._inference_sema = threading.Semaphore(self.settings.max_concurrent_inferences)
@@ -195,6 +220,34 @@ class RuntimeCoordinator:
     def sample_resources(self) -> Dict[str, Any]:
         """On-demand sample — never polls continuously."""
         return self.monitor.sample()
+
+    # ── EventBus + Scheduler accessors (Phase 1) ────────────────────
+
+    def get_event_bus(self) -> EventBus:
+        """
+        Return the process-wide EventBus.
+
+        Use this to subscribe/publish events without importing RuntimeCoordinator
+        directly in agent or service modules.
+
+        Example (Phase 4):
+            bus = get_runtime().get_event_bus()
+            bus.subscribe("intent.classified", my_handler)
+        """
+        return self.event_bus
+
+    def get_scheduler(self) -> Scheduler:
+        """
+        Return the process-wide Scheduler.
+
+        Use this to submit background jobs without importing Scheduler directly.
+
+        Example:
+            job_id = get_runtime().get_scheduler().submit(
+                "download:llama3.2:1b", download_fn, "llama3.2:1b"
+            )
+        """
+        return self.scheduler
 
     # ── Internals ───────────────────────────────────────────────────
 

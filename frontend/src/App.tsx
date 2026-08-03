@@ -43,7 +43,7 @@ export default function App() {
   const chatRef = useRef<ChatWindowHandle>(null);
   /** Full prompts (including attachments) for reliable Try again */
   const promptHistory = useRef<string[]>([]);
-  const [view, setView] = useState<NavView>("home");
+  const [view, setView] = useState<NavView>("chats");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -62,9 +62,10 @@ export default function App() {
   const [promptStudioResult, setPromptStudioResult] = useState<PromptStudioResult | null>(null);
   const [pendingStudioPrompt, setPendingStudioPrompt] = useState("");
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsSaveMessage, setSettingsSaveMessage] = useState<string | null>(
-    null
-  );
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState<string | null>(null);
+  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [settingsSaved, setSettingsSaved] = useState(false);
 
   const persistWorkspace = (next: WorkspaceState) => {
     setWorkspace(next);
@@ -257,7 +258,13 @@ export default function App() {
   const ensureConversation = async (): Promise<string | null> => {
     if (activeConvId) return activeConvId;
     try {
-      const data = await api.createConversation();
+      const data = await api.createConversation(activeProjectId);
+      if (activeProjectId) {
+        persistWorkspace({
+          ...workspace,
+          projectByChat: { ...workspace.projectByChat, [data.id]: activeProjectId },
+        });
+      }
       setConversations((prev) => [data, ...prev]);
       setActiveConvId(data.id);
       return data.id;
@@ -458,7 +465,7 @@ export default function App() {
     if (activeConvId === id) {
       setActiveConvId("");
       setMessages([]);
-      setView("home");
+      setView("chats");
     }
   };
 
@@ -509,14 +516,21 @@ export default function App() {
     if (projectId) projectByChat[chatId] = projectId;
     else delete projectByChat[chatId];
     persistWorkspace({ ...workspace, projectByChat });
+    void api.updateConversationProject(chatId, projectId);
   };
 
   const handleCreateProject = () => {
-    const name = window.prompt("Project name", "New project");
-    if (!name?.trim()) return;
-    const project = { id: newId("proj"), name: name.trim() };
+    setNewProjectName("");
+    setShowCreateProjectModal(true);
+  };
+
+  const submitCreateProject = () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    const project = { id: newId("proj"), name };
     persistWorkspace({ ...workspace, projects: [...workspace.projects, project] });
     setActiveProjectId(project.id);
+    setShowCreateProjectModal(false);
   };
 
   const handleRenameProject = (id: string) => {
@@ -536,7 +550,7 @@ export default function App() {
   };
 
   const handleCreateChat = async () => {
-    const data = await api.createConversation();
+    const data = await api.createConversation(activeProjectId);
     if (activeProjectId) {
       persistWorkspace({
         ...workspace,
@@ -615,7 +629,8 @@ export default function App() {
     })
       .then(() => {
         setSettingsSaveMessage("Saved ✓");
-        setTimeout(() => setSettingsSaveMessage(null), 2000);
+        setSettingsSaved(true);
+        setTimeout(() => { setSettingsSaveMessage(null); setSettingsSaved(false); }, 3000);
       })
       .catch((err) => {
         console.error(err);
@@ -624,7 +639,7 @@ export default function App() {
       .finally(() => setSettingsSaving(false));
   };
 
-  const showHomeComposer = view === "home";
+  const showHomeComposer = false;
   const showChatComposer = view === "chats";
 
   return (
@@ -667,24 +682,55 @@ export default function App() {
 
       <div className="main-column">
         <main className={`main-stage ${view === "chats" ? "is-chat" : ""}`}>
-          {view === "home" && (
-            <div className="home-stage">
-              <Greeting
-                userName={userName}
-                onQuickAction={(p) => {
-                  setPrompt(p);
-                  setView("home");
-                }}
-              />
-            </div>
-          )}
-
           {view === "chats" && (
             <div className="chat-stage">
+              <div className="chat-stage-header">
+                <div className="chat-header-title">
+                  {activeConvId ? (
+                    <span className="chat-title-text">
+                      {conversations.find((c) => c.id === activeConvId)?.title || "Chat"}
+                    </span>
+                  ) : (
+                    <span className="chat-title-text">New Chat</span>
+                  )}
+                </div>
+                <div className="chat-header-actions">
+                  <label className="project-select-label">
+                    <span>Project:</span>
+                    <select
+                      value={
+                        activeConvId
+                          ? (conversations.find((c) => c.id === activeConvId)?.project_id || "")
+                          : (activeProjectId || "")
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value || null;
+                        if (activeConvId) {
+                          handleMoveChatToProject(activeConvId, val);
+                        } else {
+                          setActiveProjectId(val);
+                        }
+                      }}
+                    >
+                      <option value="">No Project (Direct Chat)</option>
+                      {workspace.projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+
               {messages.length === 0 && !isGenerating ? (
                 <div className="chat-empty">
-                  <h2>Start a conversation</h2>
-                  <p>Ask Mimir to generate documents, analyze data, or write code.</p>
+                  <Greeting
+                    userName={userName}
+                    onQuickAction={(p) => {
+                      setPrompt(p);
+                    }}
+                  />
                 </div>
               ) : (
                 <ChatWindow
@@ -736,6 +782,7 @@ export default function App() {
               onDeveloperToolsEnabled={setDeveloperToolsEnabled}
               onShowRuntimeTaskManager={(v) => setShowRuntimeTaskManager(v)}
               onSave={(e) => void saveSettings(e)}
+              saved={settingsSaved}
             />
           )}
         </main>
@@ -773,6 +820,42 @@ export default function App() {
           sendFromStudio(buildPromptWithAttachments(p, files));
         }}
       />
+
+      {showCreateProjectModal && (
+        <div className="modal-overlay">
+          <div className="modal-card glass-card">
+            <h3>Create New Project</h3>
+            <p className="modal-subtitle">Organize your chats and share memory context.</p>
+            <input
+              autoFocus
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              placeholder="Project name (e.g. Sales Q3, Web App Refactor)"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitCreateProject();
+                if (e.key === "Escape") setShowCreateProjectModal(false);
+              }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowCreateProjectModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={submitCreateProject}
+                disabled={!newProjectName.trim()}
+              >
+                Create Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

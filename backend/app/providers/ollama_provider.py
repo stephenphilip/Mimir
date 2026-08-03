@@ -91,7 +91,32 @@ class OllamaProvider(IProvider):
         schema: Dict[str, Any],
         system_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        raise NotImplementedError("Structured JSON output is not supported in the MVP Ollama provider.")
+        url = f"{self.base_url}/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json",
+            "keep_alive": "30m",
+            "options": {"num_predict": 1024, "temperature": 0.1},
+        }
+        
+        # Include schema in system prompt if provided
+        final_system = system_prompt or ""
+        if schema:
+            final_system += f"\n\nYou MUST respond in JSON format matching this schema:\n{json.dumps(schema)}"
+            
+        if final_system:
+            payload["system"] = final_system
+
+        try:
+            response = requests.post(url, json=payload, timeout=(10, 60))
+            if response.status_code == 200:
+                result_text = response.json().get("response", "{}")
+                return json.loads(result_text)
+            raise Exception(f"Ollama returned status code {response.status_code}")
+        except Exception as e:
+            raise Exception(f"Error connecting to Ollama: {str(e)}")
 
     def call_tools(
         self,

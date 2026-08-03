@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 import subprocess
@@ -127,15 +129,15 @@ def _install_ollama_linux() -> bool:
 
 
 def _wait_for_ollama(timeout_s: int = 30) -> bool:
-    """Poll localhost:11434 until Ollama responds or timeout expires."""
-    url = os.environ.get("MIMIR_OLLAMA_URL", "http://localhost:11434")
+    """Poll 127.0.0.1:11434 until Ollama responds or timeout expires."""
+    import socket
     deadline = time.time() + timeout_s
-    print(f"  Waiting for Ollama to start at {url} ...", end="", flush=True)
+    print(f"  Waiting for Ollama to start at http://127.0.0.1:11434 ...", end="", flush=True)
     while time.time() < deadline:
         try:
-            urllib.request.urlopen(f"{url}/api/tags", timeout=2)
-            print(" ready.")
-            return True
+            with socket.create_connection(("127.0.0.1", 11434), timeout=1.0):
+                print(" ready.")
+                return True
         except Exception:
             print(".", end="", flush=True)
             time.sleep(1)
@@ -145,9 +147,10 @@ def _wait_for_ollama(timeout_s: int = 30) -> bool:
 
 def _start_ollama_service() -> None:
     """Start the Ollama background server if it isn't already running."""
+    import socket
     try:
-        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-        return  # already running
+        with socket.create_connection(("127.0.0.1", 11434), timeout=1.0):
+            return  # already running
     except Exception:
         pass
 
@@ -230,6 +233,35 @@ def resolve_python(root_dir: Path, backend_dir: Path) -> Path:
     return candidates[0]
 
 
+def _get_npm_command() -> list[str]:
+    """Resolve the working npm command, using the built-in npm-cli.js if the global npm is broken."""
+    default_cmd = ["npm"]
+    try:
+        res = subprocess.run(
+            ["npm", "--version"],
+            capture_output=True,
+            text=True,
+            shell=(sys.platform == "win32"),
+            timeout=5
+        )
+        if res.returncode == 0 and "TypeError" not in res.stderr and "TypeError" not in res.stdout:
+            return default_cmd
+    except Exception:
+        pass
+
+    node_exe = shutil.which("node")
+    if node_exe:
+        node_dir = Path(node_exe).parent
+        candidates = [
+            node_dir / "node_modules" / "npm" / "bin" / "npm-cli.js",
+            node_dir.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        ]
+        for path in candidates:
+            if path.exists():
+                return [str(node_exe), str(path)]
+    return default_cmd
+
+
 def ensure_frontend_deps(frontend_dir: Path) -> None:
     """Install npm packages if node_modules/vite is missing."""
     vite_bin = frontend_dir / "node_modules" / "vite" / "bin" / "vite.js"
@@ -238,10 +270,11 @@ def ensure_frontend_deps(frontend_dir: Path) -> None:
         return
 
     print("Frontend dependencies missing. Running npm install ...")
+    npm_cmd = _get_npm_command()
     result = subprocess.run(
-        ["npm", "install"],
+        npm_cmd + ["install"],
         cwd=str(frontend_dir),
-        shell=(sys.platform == "win32"),
+        shell=(sys.platform == "win32" and len(npm_cmd) == 1),
     )
     if result.returncode != 0:
         print("Error: npm install failed. Fix the npm errors above, then retry.")
@@ -311,37 +344,28 @@ def main():
     backend_proc = subprocess.Popen(
         [str(python_exe), "-m", "uvicorn", "app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(backend_dir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
     )
 
     time.sleep(2)
 
     print("[2/2] Starting Vite Frontend on http://localhost:5173 ...")
+    npm_cmd = _get_npm_command()
     frontend_proc = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
+        npm_cmd + ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
         cwd=str(frontend_dir),
-        shell=(sys.platform == "win32"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        shell=(sys.platform == "win32" and len(npm_cmd) == 1),
     )
 
     # Give Vite a moment; surface early failures instead of a fake success banner
     time.sleep(2)
     if frontend_proc.poll() is not None:
         print("Error: Frontend failed to start.")
-        drain_output(frontend_proc, "Frontend")
         backend_proc.terminate()
         print("\nTip: from frontend/, run: npm install && npm run dev")
         sys.exit(1)
 
     if backend_proc.poll() is not None:
         print("Error: Backend failed to start.")
-        drain_output(backend_proc, "Backend")
         frontend_proc.terminate()
         sys.exit(1)
 

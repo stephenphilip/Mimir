@@ -40,6 +40,7 @@ class Conversation(Base):
     id = Column(String, primary_key=True, index=True)
     title = Column(String, default="New Conversation")
     user_id = Column(Integer, ForeignKey("users.id"))
+    project_id = Column(String, nullable=True, index=True)
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -85,6 +86,27 @@ class InstalledModel(Base):
     size = Column(String)
     local_path = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelCatalog(Base):
+    __tablename__ = "model_catalog"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    base_name = Column(String)
+    parameter_size = Column(Float)
+    file_size_gb = Column(Float)
+    context_limit = Column(Integer, default=8192)
+    required_ram_gb = Column(Float)
+    required_vram_gb = Column(Float)
+    total_layers = Column(Integer, default=32)
+    score_reasoning = Column(Float)
+    score_coding = Column(Float)
+    score_math = Column(Float)
+    score_conversational = Column(Float)
+    tps_cpu = Column(Float)
+    tps_gpu = Column(Float)
+    is_active = Column(Integer, default=1)
+    release_date = Column(DateTime, default=datetime.utcnow)
 
 
 class Setting(Base):
@@ -155,6 +177,83 @@ class ExecutionHistory(Base):
     stderr = Column(Text, nullable=True)
     exit_code = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── Phase 1: New memory layer tables (additive — existing tables unchanged) ──
+
+class WorkingMemoryLog(Base):
+    """
+    Optional debug trace of WorkingMemory contents.
+
+    WorkingMemory itself is ephemeral (per-request, never persisted).
+    This table is ONLY written when debug tracing is explicitly enabled.
+    In normal production use, this table remains empty.
+
+    Phase 1: Table created on startup, never written.
+    Phase 4+: Optional debug mode can write agent intermediate states here.
+    """
+    __tablename__ = "working_memory_log"
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(String, ForeignKey("conversations.id"), index=True, nullable=True)
+    session_id = Column(String, index=True, nullable=True)   # RuntimeCoordinator session
+    key = Column(String)
+    value = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EpisodicMemory(Base):
+    """
+    Episodic memories: AI-generated summaries of past conversation sessions.
+
+    Populated by SummarizerAgent (Phase 6) after a conversation ends.
+    Used by MemoryAgent (Phase 4) to inject relevant past session context
+    into new conversations without replaying full message history.
+
+    Example: "On 2026-07-20, the user worked on a Python FastAPI project
+    and asked for help with JWT authentication."
+
+    Phase 1: Table created on startup, never written.
+    Phase 6: SummarizerAgent writes summaries here after conversations end.
+    """
+    __tablename__ = "episodic_memory"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    conversation_id = Column(String, ForeignKey("conversations.id"), nullable=True, index=True)
+    summary = Column(Text)                          # AI-generated session summary
+    topics = Column(Text, nullable=True)            # JSON array: ["fastapi", "jwt", "python"]
+    sentiment = Column(String, nullable=True)       # "positive" | "neutral" | "negative"
+    importance_score = Column(Float, nullable=True) # 0.0–1.0, set by SummarizerAgent
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EntityMemory(Base):
+    """
+    Named entity memory: tracks people, places, projects, and concepts
+    the user has mentioned across conversations.
+
+    Examples:
+      - entity_name="Mimir Next", entity_type="project"
+      - entity_name="Stephen", entity_type="person"
+      - entity_name="FastAPI", entity_type="technology"
+
+    Populated by entity extraction in Phase 6.
+    Used by MemoryAgent (Phase 4) to inject entity-specific context
+    (e.g., "You have discussed the Mimir Next project in 3 previous chats").
+
+    Phase 1: Table created on startup, never written.
+    Phase 6: EntityExtractor writes records here during post-conversation processing.
+    """
+    __tablename__ = "entity_memory"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    entity_name = Column(String, index=True)
+    entity_type = Column(String)           # "person" | "place" | "project" | "technology" | "concept"
+    description = Column(Text, nullable=True)
+    attributes = Column(Text, nullable=True)  # JSON: {"language": "Python", "framework": "FastAPI"}
+    mention_count = Column(Integer, default=1)
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+
 
 
 def _get_engine():
@@ -293,6 +392,114 @@ def init_db() -> None:
                 is_default=True,
             )
             db.add(default_ws)
+
+        # Seed Model Catalog
+        if not db.query(ModelCatalog).first():
+            catalog_seeds = [
+                ModelCatalog(
+                    name="llama3.2:1b",
+                    base_name="llama3.2",
+                    parameter_size=1.3,
+                    file_size_gb=1.3,
+                    context_limit=8192,
+                    required_ram_gb=4.0,
+                    required_vram_gb=2.0,
+                    total_layers=28,
+                    score_reasoning=65.0,
+                    score_coding=35.0,
+                    score_math=40.0,
+                    score_conversational=85.0,
+                    tps_cpu=12.0,
+                    tps_gpu=50.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="llama3.2:3b",
+                    base_name="llama3.2",
+                    parameter_size=3.2,
+                    file_size_gb=2.0,
+                    context_limit=8192,
+                    required_ram_gb=6.0,
+                    required_vram_gb=3.2,
+                    total_layers=28,
+                    score_reasoning=65.0,
+                    score_coding=50.0,
+                    score_math=55.0,
+                    score_conversational=70.0,
+                    tps_cpu=8.5,
+                    tps_gpu=38.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="qwen2.5-coder:1.5b",
+                    base_name="qwen2.5-coder",
+                    parameter_size=1.5,
+                    file_size_gb=1.6,
+                    context_limit=32768,
+                    required_ram_gb=4.0,
+                    required_vram_gb=2.2,
+                    total_layers=28,
+                    score_reasoning=60.0,
+                    score_coding=68.0,
+                    score_math=62.0,
+                    score_conversational=65.0,
+                    tps_cpu=10.0,
+                    tps_gpu=42.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="qwen2.5-coder:7b",
+                    base_name="qwen2.5-coder",
+                    parameter_size=7.2,
+                    file_size_gb=4.7,
+                    context_limit=32768,
+                    required_ram_gb=16.0,
+                    required_vram_gb=8.0,
+                    total_layers=28,
+                    score_reasoning=80.0,
+                    score_coding=85.0,
+                    score_math=82.0,
+                    score_conversational=80.0,
+                    tps_cpu=4.0,
+                    tps_gpu=25.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="gemma2:2b",
+                    base_name="gemma2",
+                    parameter_size=2.6,
+                    file_size_gb=1.6,
+                    context_limit=8192,
+                    required_ram_gb=6.0,
+                    required_vram_gb=3.0,
+                    total_layers=26,
+                    score_reasoning=63.0,
+                    score_coding=45.0,
+                    score_math=52.0,
+                    score_conversational=68.0,
+                    tps_cpu=8.0,
+                    tps_gpu=35.0,
+                    is_active=1
+                ),
+                ModelCatalog(
+                    name="mistral:7b",
+                    base_name="mistral",
+                    parameter_size=7.2,
+                    file_size_gb=4.1,
+                    context_limit=32768,
+                    required_ram_gb=16.0,
+                    required_vram_gb=8.0,
+                    total_layers=32,
+                    score_reasoning=72.0,
+                    score_coding=55.0,
+                    score_math=68.0,
+                    score_conversational=75.0,
+                    tps_cpu=3.5,
+                    tps_gpu=22.0,
+                    is_active=1
+                )
+            ]
+            db.bulk_save_objects(catalog_seeds)
 
         db.commit()
     finally:

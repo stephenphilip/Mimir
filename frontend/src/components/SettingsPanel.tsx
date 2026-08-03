@@ -18,6 +18,7 @@ interface Props {
   onDeveloperToolsEnabled: (v: boolean) => void;
   onShowRuntimeTaskManager: (v: boolean) => void;
   onSave: (e: FormEvent) => void;
+  saved?: boolean;
 }
 
 export function SettingsPanel({
@@ -38,6 +39,7 @@ export function SettingsPanel({
   onDeveloperToolsEnabled,
   onShowRuntimeTaskManager,
   onSave,
+  saved,
 }: Props) {
   const themes = [
     { id: "dark", label: "Obsidian Dark" },
@@ -142,7 +144,7 @@ export function SettingsPanel({
           </label>
         )}
 
-        <div className="form-actions">
+        <div className="form-actions" style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <button
             type="submit"
             className="btn-primary"
@@ -150,6 +152,11 @@ export function SettingsPanel({
           >
             {isSaving ? "Saving…" : "Save changes"}
           </button>
+          {saved && (
+            <span className="settings-saved-indicator" style={{ color: "var(--ok)", fontSize: "13px", fontWeight: 500 }}>
+              ✓ Settings saved!
+            </span>
+          )}
         </div>
 
         {saveMessage && (

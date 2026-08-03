@@ -7,12 +7,15 @@ from ..interfaces.repositories import (
     IMemoryRepository,
     IModelRepository,
     IArtifactRepository,
-    ISettingRepository
+    ISettingRepository,
+    IModelCatalogRepository,
+    IEpisodicRepository,
+    IEntityRepository
 )
 from ..interfaces.workspaces import IWorkspaceRepository, IFileRepository
 from ..db import (
     Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact,
-    Setting, User, ExecutionHistory, Workspace, ManagedFile,
+    Setting, User, ExecutionHistory, Workspace, ManagedFile, ModelCatalog,
 )
 
 class SQLiteConversationRepository(IConversationRepository):
@@ -22,12 +25,21 @@ class SQLiteConversationRepository(IConversationRepository):
     def get_by_id(self, conv_id: str) -> Optional[Conversation]:
         return self.db.query(Conversation).filter(Conversation.id == conv_id).first()
 
-    def create(self, conv_id: str, title: str, user_id: int) -> Conversation:
-        conv = Conversation(id=conv_id, title=title, user_id=user_id)
+    def create(self, conv_id: str, title: str, user_id: int, project_id: Optional[str] = None) -> Conversation:
+        conv = Conversation(id=conv_id, title=title, user_id=user_id, project_id=project_id)
         self.db.add(conv)
         self.db.commit()
         self.db.refresh(conv)
         return conv
+
+    def update_project(self, conv_id: str, project_id: Optional[str]) -> None:
+        conv = self.get_by_id(conv_id)
+        if conv:
+            conv.project_id = project_id
+            self.db.commit()
+
+    def get_by_project(self, project_id: str) -> List[Conversation]:
+        return self.db.query(Conversation).filter(Conversation.project_id == project_id).all()
 
     def delete(self, conv_id: str) -> bool:
         conv = self.get_by_id(conv_id)
@@ -326,6 +338,7 @@ class SQLiteSettingRepository(ISettingRepository):
             return s
 
 
+<<<<<<< HEAD
 class SQLiteWorkspaceRepository(IWorkspaceRepository):
     def __init__(self, db: Session):
         self.db = db
@@ -461,3 +474,137 @@ class SQLiteFileRepository(IFileRepository):
         self.db.delete(row)
         self.db.commit()
         return True
+=======
+class SQLiteModelCatalogRepository(IModelCatalogRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_name(self, name: str) -> Optional[ModelCatalog]:
+        return self.db.query(ModelCatalog).filter(ModelCatalog.name == name).first()
+
+    def get_all_active(self) -> List[ModelCatalog]:
+        return self.db.query(ModelCatalog).filter(ModelCatalog.is_active == 1).all()
+
+    def save_master_model(
+        self,
+        name: str,
+        base_name: str,
+        parameter_size: float,
+        file_size_gb: float,
+        required_ram_gb: float,
+        required_vram_gb: float,
+        total_layers: int,
+        score_reasoning: float,
+        score_coding: float,
+        score_math: float,
+        score_conversational: float,
+        tps_cpu: float,
+        tps_gpu: float,
+        is_active: int = 1
+    ) -> ModelCatalog:
+        existing = self.get_by_name(name)
+        if existing:
+            existing.base_name = base_name
+            existing.parameter_size = parameter_size
+            existing.file_size_gb = file_size_gb
+            existing.required_ram_gb = required_ram_gb
+            existing.required_vram_gb = required_vram_gb
+            existing.total_layers = total_layers
+            existing.score_reasoning = score_reasoning
+            existing.score_coding = score_coding
+            existing.score_math = score_math
+            existing.score_conversational = score_conversational
+            existing.tps_cpu = tps_cpu
+            existing.tps_gpu = tps_gpu
+            existing.is_active = is_active
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+        else:
+            model = ModelCatalog(
+                name=name,
+                base_name=base_name,
+                parameter_size=parameter_size,
+                file_size_gb=file_size_gb,
+                required_ram_gb=required_ram_gb,
+                required_vram_gb=required_vram_gb,
+                total_layers=total_layers,
+                score_reasoning=score_reasoning,
+                score_coding=score_coding,
+                score_math=score_math,
+                score_conversational=score_conversational,
+                tps_cpu=tps_cpu,
+                tps_gpu=tps_gpu,
+                is_active=is_active
+            )
+            self.db.add(model)
+            self.db.commit()
+            self.db.refresh(model)
+            return model
+
+    def delete_by_name(self, name: str) -> bool:
+        model = self.get_by_name(name)
+        if model:
+            model.is_active = 0
+            self.db.commit()
+            return True
+        return False
+
+class SQLiteEpisodicRepository(IEpisodicRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_recent_by_user(self, user_id: int, limit: int = 5) -> List[Any]:
+        from app.db import EpisodicMemory
+        return self.db.query(EpisodicMemory).filter(EpisodicMemory.user_id == user_id).order_by(EpisodicMemory.created_at.desc()).limit(limit).all()
+
+    def save(self, user_id: int, conversation_id: str, summary: str, topics: Optional[str] = None) -> Any:
+        from app.db import EpisodicMemory
+        memory = EpisodicMemory(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            summary=summary,
+            topics=topics
+        )
+        self.db.add(memory)
+        self.db.commit()
+        self.db.refresh(memory)
+        return memory
+
+class SQLiteEntityRepository(IEntityRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_name(self, user_id: int, entity_name: str) -> Optional[Any]:
+        from app.db import EntityMemory
+        return self.db.query(EntityMemory).filter(EntityMemory.user_id == user_id, EntityMemory.entity_name == entity_name).first()
+
+    def get_all_by_user(self, user_id: int) -> List[Any]:
+        from app.db import EntityMemory
+        return self.db.query(EntityMemory).filter(EntityMemory.user_id == user_id).all()
+
+    def save(self, user_id: int, entity_name: str, entity_type: str, description: Optional[str] = None, attributes: Optional[str] = None) -> Any:
+        from app.db import EntityMemory
+        from datetime import datetime
+        entity = self.get_by_name(user_id, entity_name)
+        if entity:
+            entity.mention_count += 1
+            entity.last_seen_at = datetime.utcnow()
+            if description:
+                entity.description = description
+            if attributes:
+                entity.attributes = attributes
+        else:
+            entity = EntityMemory(
+                user_id=user_id,
+                entity_name=entity_name,
+                entity_type=entity_type,
+                description=description,
+                attributes=attributes
+            )
+            self.db.add(entity)
+        self.db.commit()
+        self.db.refresh(entity)
+        return entity
+
+>>>>>>> origin/main

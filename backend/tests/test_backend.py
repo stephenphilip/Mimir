@@ -1,6 +1,6 @@
 import sys
 from app.db import init_db, SessionLocal, User, Setting
-from app.services.intent_service import IntentService
+from app.services.intent_service import LegacyIntentService
 from app.services.capability_service import CapabilityService
 from app.services.model_service import ModelService
 from app.services.execution_service import ExecutionService
@@ -23,7 +23,7 @@ def run_tests():
         sys.exit(1)
 
     print("\n--- 2. Testing Intent Service ---")
-    intent_service = IntentService()
+    intent_service = LegacyIntentService()
     test_prompts = [
         ("Please create an excel expense tracker spreadsheet for this year", "spreadsheet_generation"),
         ("Plot a bar chart of the sales data for me", "data_visualization"),
@@ -74,7 +74,30 @@ def run_tests():
 
     print("\n--- 5. Testing Execution Service ---")
     db = SessionLocal()
-    exec_service = ExecutionService()
+    from tools.python_tool import PythonTool
+    from config.paths import get_paths
+    from app.core.context import ExecutionContext
+    
+    from app.repositories.sqlite_repositories import SQLiteSettingRepository as SqliteSetRepo
+    from app.repositories.sqlite_repositories import SQLiteArtifactRepository as SqliteArtRepo
+    setting_repo_local = SqliteSetRepo(db)
+    artifact_repo_local = SqliteArtRepo(db)
+    
+    # Remove pre-existing test artifact to ensure new detection succeeds
+    import os
+    test_csv_path = get_paths().artifacts_dir / "test_run.csv"
+    if test_csv_path.exists():
+        try:
+            os.remove(test_csv_path)
+        except Exception:
+            pass
+
+    exec_tool = PythonTool(
+        artifact_repo=artifact_repo_local,
+        setting_repo=setting_repo_local,
+        workspace_dir=get_paths().workspace_dir
+    )
+    
     code = """
 import pandas as pd
 import numpy as np
@@ -88,7 +111,8 @@ df.to_csv('test_run.csv', index=False)
 print("CSV generated successfully.")
 """
     try:
-        res = exec_service.execute_code(code, message_id=None, db=db)
+        ctx = ExecutionContext(prompt="test")
+        res = exec_tool.execute({"code": code}, ctx)
         print(f"Exit code: {res['exit_code']}")
         print(f"Stdout: {res['stdout'].strip()}")
         print(f"Stderr: {res['stderr'].strip()}")
@@ -105,9 +129,11 @@ print("CSV generated successfully.")
     print("\n--- 6. Testing Model Memory Lifecycles & Time Calculations ---")
     db = SessionLocal()
     try:
+        from app.repositories.sqlite_repositories import SQLiteModelCatalogRepository
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
-        model_service = ModelService(model_repo, setting_repo)
+        catalog_repo = SQLiteModelCatalogRepository(db)
+        model_service = ModelService(model_repo, setting_repo, catalog_repo=catalog_repo)
         
         # Test unloading execution safety
         model_service.unload_other_models("non_existent_mock_model")

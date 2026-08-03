@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional, Generator
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,21 +39,13 @@ get_settings.cache_clear()
 from .db import SessionLocal, ensure_db_ready
 from .repositories.sqlite_repositories import (
     SQLiteConversationRepository,
-    SQLiteMemoryRepository,
     SQLiteModelRepository,
+    SQLiteSettingRepository,
+    SQLiteModelCatalogRepository,
     SQLiteArtifactRepository,
-    SQLiteSettingRepository
 )
-from .services.intent_service import IntentService
-from .services.capability_service import CapabilityService
-from .services.memory.memory_service import MemoryService
-from .services.context_builder import ContextBuilder
-from .services.model_selector import ModelSelector
-from .services.planner import Planner
-from .services.execution_engine import ExecutionEngine
-from .providers.ollama_provider import OllamaProvider
 from .services.model_service import ModelService
-from .core.orchestrator import Orchestrator
+from .pipeline_factory import build_pipeline
 from .api.platform import router as platform_router
 from .creator.factory import build_creator_engine
 
@@ -151,9 +144,11 @@ def startup_event():
     try:
         model_repo = SQLiteModelRepository(db)
         setting_repo = SQLiteSettingRepository(db)
+        catalog_repo = SQLiteModelCatalogRepository(db)
         ms = ModelService(
             model_repo,
             setting_repo,
+            catalog_repo=catalog_repo,
             ollama_url=settings.ollama_url,
         )
         runtime.bind_model_service(ms)
@@ -209,79 +204,88 @@ class SettingsUpdate(BaseModel):
     show_runtime_task_manager: Optional[str] = None
 
 
-def stream_with_cleanup(generator, db: Session):
+def stream_with_cleanup(generator, db: Session, conv_id: str = None, runtime = None):
     try:
         for chunk in generator:
             yield chunk
     finally:
         db.close()
+        if conv_id and runtime and hasattr(runtime, 'scheduler'):
+            # Trigger background memory extraction tasks (Phase 6)
+            def run_background_tasks(cid: str):
+                from app.db import SessionLocal
+                from agents.summarizer_agent import SummarizerAgent
+                from agents.entity_extractor import EntityExtractorAgent
+                from app.repositories.sqlite_repositories import SQLiteConversationRepository, SQLiteEpisodicRepository, SQLiteEntityRepository
+                from app.providers.ollama_provider import OllamaProvider
+                
+                bg_db = SessionLocal()
+                try:
+                    conv_repo = SQLiteConversationRepository(bg_db)
+                    episodic_repo = SQLiteEpisodicRepository(bg_db)
+                    entity_repo = SQLiteEntityRepository(bg_db)
+                    provider = OllamaProvider()
+                    
+                    summarizer = SummarizerAgent(conv_repo, episodic_repo, provider)
+                    extractor = EntityExtractorAgent(conv_repo, entity_repo, provider)
+                    
+                    summarizer.summarize_conversation(cid)
+                    extractor.extract_entities(cid)
+                finally:
+                    bg_db.close()
+            
+            runtime.scheduler.submit(f"post_processing_{conv_id}", run_background_tasks, conv_id)
 
 
 def _build_runtime_for_request(db: Session):
-    """Bind a request-scoped ModelService to the process-wide RuntimeCoordinator."""
+    """
+    Bind a request-scoped ModelService to the process-wide RuntimeCoordinator.
+
+    Used by non-chat endpoints (e.g. /api/system/status) that need Ollama
+    access but don't require the full inference pipeline.
+    For the chat endpoint, use pipeline_factory.build_pipeline() directly.
+    """
     settings = get_settings()
     runtime = get_runtime()
     model_repo = SQLiteModelRepository(db)
     setting_repo = SQLiteSettingRepository(db)
-    ms = ModelService(model_repo, setting_repo, ollama_url=settings.ollama_url)
+    catalog_repo = SQLiteModelCatalogRepository(db)
+    ms = ModelService(model_repo, setting_repo, catalog_repo=catalog_repo, ollama_url=settings.ollama_url)
     runtime.bind_model_service(ms)
-    return runtime, model_repo, setting_repo
+    return runtime, model_repo, setting_repo, catalog_repo
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest):
-    """SSE endpoint streaming intent, capability checks, model loading, chat content, and script execution logs."""
+    """
+    SSE endpoint — streams intent classification, model selection, LLM content,
+    Python execution results, and download progress events.
+
+    Pipeline is constructed by pipeline_factory.build_pipeline() to keep this
+    endpoint thin. Phase 4 will swap build_pipeline() for build_agent_runtime().
+    """
     ensure_db_ready()
     db = SessionLocal()
     paths = get_paths()
+    runtime = get_runtime()
 
+    # Full pipeline construction delegated to factory
+    orchestrator = build_pipeline(db, paths, runtime)
+
+    # Ensure conversation record exists before streaming starts
+    from .repositories.sqlite_repositories import SQLiteConversationRepository
     conv_repo = SQLiteConversationRepository(db)
-    mem_repo = SQLiteMemoryRepository(db)
+
+    # Build creator engine for artifact generation
     art_repo = SQLiteArtifactRepository(db)
     creator_engine, _artifact_manager = build_creator_engine(art_repo)
 
-    runtime, model_repo, setting_repo = _build_runtime_for_request(db)
+    # Full pipeline via factory (memory, agents, tool framework)
+    orchestrator = build_pipeline(db, paths, runtime, creator_engine=creator_engine)
 
-    intent_service = IntentService()
-    capability_service = CapabilityService()
-    # MemoryService stays inert until ContextBuilder touches it
-    memory_service = MemoryService(mem_repo, conv_repo, setting_repo)
-    context_builder = ContextBuilder(memory_service)
-    model_selector = ModelSelector()
-    provider = OllamaProvider()
-    planner = Planner()
-
-    # Lazy plugin import: PythonExecutor loaded only when python_execution runs
-    def executor_factory(capability: str):
-        return runtime.get_executor(
-            capability,
-            art_repo,
-            setting_repo,
-            str(paths.workspace_dir),
-            creator_engine=creator_engine,
-        )
-
-    execution_engine = ExecutionEngine(art_repo, executor_factory=executor_factory)
-
-    orchestrator = Orchestrator(
-        intent_service=intent_service,
-        capability_service=capability_service,
-        context_builder=context_builder,
-        model_selector=model_selector,
-        provider=provider,
-        execution_engine=execution_engine,
-        planner=planner,
-        runtime=runtime,
-        conversation_repo=conv_repo,
-        model_repo=model_repo,
-        creator_engine=creator_engine,
-    )
-
-    conv = conv_repo.get_by_id(req.conversation_id)
-    if not conv:
+    if not conv_repo.get_by_id(req.conversation_id):
         conv_repo.create(req.conversation_id, "New Chat", 1)
 
-    # Pass workspace_id through orchestrator via a wrapper generator
     def _stream():
         for chunk in orchestrator.process_prompt(
             req.conversation_id,
@@ -291,8 +295,13 @@ def chat(req: ChatRequest):
             yield chunk
 
     return StreamingResponse(
-        stream_with_cleanup(_stream(), db),
-        media_type="text/event-stream"
+        stream_with_cleanup(
+            _stream(),
+            db,
+            conv_id=req.conversation_id,
+            runtime=runtime
+        ),
+        media_type="text/event-stream",
     )
 
 
@@ -303,16 +312,28 @@ def get_conversations(db: Session = Depends(get_db)):
     return [{
         "id": c.id,
         "title": c.title,
-        "updated_at": c.updated_at
+        "updated_at": c.updated_at,
+        "project_id": c.project_id
     } for c in convs]
 
 
 @app.post("/api/conversations")
-def create_conversation(db: Session = Depends(get_db)):
+def create_conversation(project_id: Optional[str] = None, db: Session = Depends(get_db)):
+    if not project_id or project_id == "null":
+        project_id = None
     conv_repo = SQLiteConversationRepository(db)
     conv_id = str(uuid.uuid4())
-    conv_repo.create(conv_id, "New Chat", 1)
-    return {"id": conv_id, "title": "New Chat"}
+    conv_repo.create(conv_id, "New Chat", 1, project_id)
+    return {"id": conv_id, "title": "New Chat", "project_id": project_id}
+
+
+@app.post("/api/conversations/{conv_id}/project")
+def update_conversation_project(conv_id: str, project_id: Optional[str] = None, db: Session = Depends(get_db)):
+    if not project_id or project_id == "null":
+        project_id = None
+    conv_repo = SQLiteConversationRepository(db)
+    conv_repo.update_project(conv_id, project_id)
+    return {"status": "success"}
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -380,7 +401,7 @@ def update_settings(settings: SettingsUpdate, db: Session = Depends(get_db)):
 @app.get("/api/system/status")
 def get_system_status(db: Session = Depends(get_db)):
     """Fetch hardware performance specifications, active download states, and active model lists."""
-    runtime, model_repo, _setting_repo = _build_runtime_for_request(db)
+    runtime, model_repo, _setting_repo, _catalog_repo = _build_runtime_for_request(db)
     ms = runtime.model_service
 
     hw = ms.detect_hardware()

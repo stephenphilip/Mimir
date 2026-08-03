@@ -4,7 +4,7 @@ from typing import Dict, Any
 from ..interfaces.services import IIntentService
 
 
-class IntentService(IIntentService):
+class LegacyIntentService(IIntentService):
     def __init__(self):
         self.rules = {
             "document_generation": [

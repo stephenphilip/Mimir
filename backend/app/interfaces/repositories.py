@@ -8,8 +8,18 @@ class IConversationRepository(ABC):
         pass
 
     @abstractmethod
-    def create(self, conv_id: str, title: str, user_id: int) -> Any:
+    def create(self, conv_id: str, title: str, user_id: int, project_id: Optional[str] = None) -> Any:
         """Create a new conversation."""
+        pass
+
+    @abstractmethod
+    def update_project(self, conv_id: str, project_id: Optional[str]) -> None:
+        """Associate conversation with a project."""
+        pass
+
+    @abstractmethod
+    def get_by_project(self, project_id: str) -> List[Any]:
+        """Fetch all conversations associated with a project."""
         pass
 
     @abstractmethod
@@ -187,4 +197,79 @@ class ISettingRepository(ABC):
     @abstractmethod
     def save(self, key: str, value: str) -> Any:
         """Save or update system setting."""
+        pass
+
+class IModelCatalogRepository(ABC):
+    @abstractmethod
+    def get_by_name(self, name: str) -> Optional[Any]:
+        """Fetch model by name."""
+        pass
+
+    @abstractmethod
+    def get_all_active(self) -> List[Any]:
+        """Fetch all active models in catalog."""
+        pass
+
+    @abstractmethod
+    def save_master_model(
+        self,
+        name: str,
+        base_name: str,
+        parameter_size: float,
+        file_size_gb: float,
+        required_ram_gb: float,
+        required_vram_gb: float,
+        total_layers: int,
+        score_reasoning: float,
+        score_coding: float,
+        score_math: float,
+        score_conversational: float,
+        tps_cpu: float,
+        tps_gpu: float,
+        is_active: int = 1
+    ) -> Any:
+        """Create or update model specification in catalog."""
+        pass
+
+    @abstractmethod
+    def delete_by_name(self, name: str) -> bool:
+        """Deactivate or remove model from catalog."""
+        pass
+
+class IEpisodicRepository(ABC):
+    @abstractmethod
+    def get_recent_by_user(self, user_id: int, limit: int = 5) -> List[Any]:
+        """Fetch recent episodic memories for a user."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, conversation_id: str, summary: str, topics: Optional[str] = None) -> Any:
+        """Create an episodic memory record."""
+        pass
+
+class IEntityRepository(ABC):
+    @abstractmethod
+    def get_by_name(self, user_id: int, entity_name: str) -> Optional[Any]:
+        """Fetch an entity by name."""
+        pass
+
+    @abstractmethod
+    def get_all_by_user(self, user_id: int) -> List[Any]:
+        """Fetch all entities for a user."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, entity_name: str, entity_type: str, description: Optional[str] = None, attributes: Optional[str] = None) -> Any:
+        """Create or update an entity memory record."""
+        pass
+
+class ISemanticRepository(ABC):
+    @abstractmethod
+    def search(self, user_id: int, query: str, limit: int = 5) -> List[Any]:
+        """Search semantic memories."""
+        pass
+
+    @abstractmethod
+    def save(self, user_id: int, content: str, source_id: Optional[str] = None) -> Any:
+        """Create a semantic memory record."""
         pass

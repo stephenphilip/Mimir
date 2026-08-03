@@ -22,8 +22,12 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getConversations: () => json<Conversation[]>("/api/conversations"),
-  createConversation: () =>
-    json<Conversation>("/api/conversations", { method: "POST" }),
+  createConversation: (projectId?: string | null) =>
+    json<Conversation>("/api/conversations" + (projectId ? `?project_id=${projectId}` : ""), { method: "POST" }),
+  updateConversationProject: (id: string, projectId: string | null) =>
+    json<{ status: string }>(`/api/conversations/${id}/project` + (projectId ? `?project_id=${projectId}` : ""), {
+      method: "POST",
+    }),
   deleteConversation: (id: string) =>
     json<{ status: string }>(`/api/conversations/${id}`, { method: "DELETE" }),
   getMessages: (id: string) => json<Message[]>(`/api/conversations/${id}/messages`),

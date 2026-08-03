@@ -78,9 +78,14 @@ class Orchestrator:
             # Load conversation
             conv = self.conversation_repo.get_by_id(conversation_id)
             if conv:
-                context.conversation = {"id": conv.id, "title": conv.title, "user_id": conv.user_id}
+                context.conversation = {
+                    "id": conv.id,
+                    "title": conv.title,
+                    "user_id": conv.user_id,
+                    "project_id": conv.project_id
+                }
             else:
-                context.conversation = {"id": conversation_id, "title": "New Chat", "user_id": 1}
+                context.conversation = {"id": conversation_id, "title": "New Chat", "user_id": 1, "project_id": None}
 
             # 2. Save user message
             user_message = self.conversation_repo.add_message(
@@ -295,8 +300,10 @@ class Orchestrator:
                     "execution_status": final_status,
                 })
 
-            new_title = prompt[:30] + "..." if len(prompt) > 30 else prompt
-            self.conversation_repo.update_title(conversation_id, new_title)
+            conv = self.conversation_repo.get_by_id(conversation_id)
+            if conv and (conv.title in ("New Chat", "New Conversation", "") or len(self.conversation_repo.get_messages(conversation_id)) <= 2):
+                new_title = prompt[:30] + "..." if len(prompt) > 30 else prompt
+                self.conversation_repo.update_title(conversation_id, new_title)
 
             yield _sse({"type": "done", "conversation_id": conversation_id})
         except Exception as e:

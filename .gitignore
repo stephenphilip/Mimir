@@ -44,3 +44,10 @@ Thumbs.db
 
 # Artifacts
 artifacts/*
+
+# Environment / secrets
+mimir.env
+.env
+
+# ComfyUI local installation
+tools/ComfyUI/

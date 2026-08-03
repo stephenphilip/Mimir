@@ -155,143 +155,145 @@ export function Sidebar({
           />
         </label>
 
-        {filter(pinned).length > 0 && (
-          <div className="chat-group">
-            <div className="chat-group-title">
-              <Pin size={12} /> Pinned
+        <div className="side-chats-list">
+          {filter(pinned).length > 0 && (
+            <div className="chat-group">
+              <div className="chat-group-title">
+                <Pin size={12} /> Pinned
+              </div>
+              {filter(pinned).map((c) => (
+                <ChatRow
+                  key={c.id}
+                  conv={c}
+                  projects={projects}
+                  active={activeConvId === c.id}
+                  onSelect={() => {
+                    onSelectChat(c.id);
+                    onNavigate("chats");
+                  }}
+                  onNewChat={onNewChat}
+                  onFocusChatSearch={onFocusChatSearch}
+                  onDelete={() => onDeleteChat(c.id)}
+                  onPin={() => onPinChat(c.id)}
+                  onArchive={() => onArchiveChat(c.id)}
+                  onRename={() => onRenameChat(c.id)}
+                  onShare={() => onShareChat(c.id)}
+                  onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
+                  onStartGroup={() => onStartGroup(c.id)}
+                />
+              ))}
             </div>
-            {filter(pinned).map((c) => (
-              <ChatRow
-                key={c.id}
-                conv={c}
-                projects={projects}
-                active={activeConvId === c.id}
-                onSelect={() => {
-                  onSelectChat(c.id);
-                  onNavigate("chats");
-                }}
-                onNewChat={onNewChat}
-                onFocusChatSearch={onFocusChatSearch}
-                onDelete={() => onDeleteChat(c.id)}
-                onPin={() => onPinChat(c.id)}
-                onArchive={() => onArchiveChat(c.id)}
-                onRename={() => onRenameChat(c.id)}
-                onShare={() => onShareChat(c.id)}
-                onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
-                onStartGroup={() => onStartGroup(c.id)}
-              />
-            ))}
-          </div>
-        )}
-
-        <div className="chat-group">
-          <div className="chat-group-title projects-head">
-            <span>
-              <Folder size={12} /> Projects
-            </span>
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="New project"
-              title="New project"
-              onClick={onCreateProject}
-            >
-              <Plus size={13} />
-            </button>
-          </div>
-
-          <div className="projects-container">
-            {projects.map((p) => {
-              const projectChats = visible.filter((c) => c.project_id === p.id);
-              const isCollapsed = collapsedProjects[p.id];
-              const isSelected = activeProjectId === p.id;
-              return (
-                <div key={p.id} className={`project-group-wrap ${isSelected ? "is-selected" : ""}`}>
-                  <div className="project-group-header">
-                    <button
-                      type="button"
-                      className="project-group-toggle"
-                      onClick={() => {
-                        onSelectProject(p.id);
-                        toggleProject(p.id);
-                      }}
-                    >
-                      <ChevronDown
-                        size={12}
-                        className={`caret-icon ${isCollapsed ? "is-collapsed" : ""}`}
-                      />
-                      <Folder size={13} />
-                      <span className="project-name">{p.name}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn project-edit"
-                      aria-label={`Rename ${p.name}`}
-                      onClick={() => onRenameProject(p.id)}
-                    >
-                      <Pencil size={11} />
-                    </button>
-                  </div>
-                  {!isCollapsed && (
-                    <div className="project-group-chats">
-                      {filter(projectChats).length === 0 ? (
-                        <p className="side-empty-project">No chats in project</p>
-                      ) : (
-                        filter(projectChats).map((c) => (
-                          <ChatRow
-                            key={c.id}
-                            conv={c}
-                            projects={projects}
-                            active={activeConvId === c.id}
-                            onSelect={() => {
-                              onSelectChat(c.id);
-                              onNavigate("chats");
-                            }}
-                            onDelete={() => onDeleteChat(c.id)}
-                            onPin={() => onPinChat(c.id)}
-                            onArchive={() => onArchiveChat(c.id)}
-                            onRename={() => onRenameChat(c.id)}
-                            onShare={() => onShareChat(c.id)}
-                            onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
-                            onStartGroup={() => onStartGroup(c.id)}
-                          />
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="chat-group">
-          <div className="chat-group-title">Direct Chats</div>
-          {filter(directChats).length === 0 ? (
-            <p className="side-empty">No direct chats</p>
-          ) : (
-            filter(directChats).map((c) => (
-              <ChatRow
-                key={c.id}
-                conv={c}
-                projects={projects}
-                active={activeConvId === c.id}
-                onSelect={() => {
-                  onSelectChat(c.id);
-                  onNavigate("chats");
-                }}
-                onNewChat={onNewChat}
-                onFocusChatSearch={onFocusChatSearch}
-                onDelete={() => onDeleteChat(c.id)}
-                onPin={() => onPinChat(c.id)}
-                onArchive={() => onArchiveChat(c.id)}
-                onRename={() => onRenameChat(c.id)}
-                onShare={() => onShareChat(c.id)}
-                onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
-                onStartGroup={() => onStartGroup(c.id)}
-              />
-            ))
           )}
+
+          <div className="chat-group">
+            <div className="chat-group-title projects-head">
+              <span>
+                <Folder size={12} /> Projects
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="New project"
+                title="New project"
+                onClick={onCreateProject}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+
+            <div className="projects-container">
+              {projects.map((p) => {
+                const projectChats = visible.filter((c) => c.project_id === p.id);
+                const isCollapsed = collapsedProjects[p.id];
+                const isSelected = activeProjectId === p.id;
+                return (
+                  <div key={p.id} className={`project-group-wrap ${isSelected ? "is-selected" : ""}`}>
+                    <div className="project-group-header">
+                      <button
+                        type="button"
+                        className="project-group-toggle"
+                        onClick={() => {
+                          onSelectProject(p.id);
+                          toggleProject(p.id);
+                        }}
+                      >
+                        <ChevronDown
+                          size={12}
+                          className={`caret-icon ${isCollapsed ? "is-collapsed" : ""}`}
+                        />
+                        <Folder size={13} />
+                        <span className="project-name">{p.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn project-edit"
+                        aria-label={`Rename ${p.name}`}
+                        onClick={() => onRenameProject(p.id)}
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    </div>
+                    {!isCollapsed && (
+                      <div className="project-group-chats">
+                        {filter(projectChats).length === 0 ? (
+                          <p className="side-empty-project">No chats in project</p>
+                        ) : (
+                          filter(projectChats).map((c) => (
+                            <ChatRow
+                              key={c.id}
+                              conv={c}
+                              projects={projects}
+                              active={activeConvId === c.id}
+                              onSelect={() => {
+                                onSelectChat(c.id);
+                                onNavigate("chats");
+                              }}
+                              onDelete={() => onDeleteChat(c.id)}
+                              onPin={() => onPinChat(c.id)}
+                              onArchive={() => onArchiveChat(c.id)}
+                              onRename={() => onRenameChat(c.id)}
+                              onShare={() => onShareChat(c.id)}
+                              onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
+                              onStartGroup={() => onStartGroup(c.id)}
+                            />
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="chat-group">
+            <div className="chat-group-title">Direct Chats</div>
+            {filter(directChats).length === 0 ? (
+              <p className="side-empty">No direct chats</p>
+            ) : (
+              filter(directChats).map((c) => (
+                <ChatRow
+                  key={c.id}
+                  conv={c}
+                  projects={projects}
+                  active={activeConvId === c.id}
+                  onSelect={() => {
+                    onSelectChat(c.id);
+                    onNavigate("chats");
+                  }}
+                  onNewChat={onNewChat}
+                  onFocusChatSearch={onFocusChatSearch}
+                  onDelete={() => onDeleteChat(c.id)}
+                  onPin={() => onPinChat(c.id)}
+                  onArchive={() => onArchiveChat(c.id)}
+                  onRename={() => onRenameChat(c.id)}
+                  onShare={() => onShareChat(c.id)}
+                  onMoveToProject={(pid) => onMoveChatToProject(c.id, pid)}
+                  onStartGroup={() => onStartGroup(c.id)}
+                />
+              ))
+            )}
+          </div>
         </div>
       </div>
 

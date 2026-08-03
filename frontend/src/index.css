@@ -181,8 +181,10 @@ a {
   z-index: 2;
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
-  height: 100%;
+  height: 100vh;
+  max-height: 100vh;
   min-width: var(--min-app-w);
+  overflow: hidden;
 }
 
 .main-column {
@@ -190,7 +192,8 @@ a {
   grid-template-rows: 1fr auto auto;
   min-width: 0;
   min-height: 0;
-  height: 100%;
+  height: 100vh;
+  max-height: 100vh;
   overflow: hidden;
 }
 
@@ -210,7 +213,7 @@ a {
 
 /* Responsive refit mode (prevents chat being cut off on narrow widths). */
 body.ui-responsive {
-  overflow: auto;
+  overflow: hidden;
   min-width: 0;
 }
 
@@ -241,6 +244,9 @@ body.ui-responsive .composer-dock {
   background: rgba(8, 10, 16, 0.78);
   border-right: 1px solid var(--border);
   backdrop-filter: blur(18px);
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .brand-row {
@@ -317,6 +323,15 @@ body.ui-responsive .composer-dock {
   flex-direction: column;
   gap: 10px;
   overflow: hidden;
+}
+
+.side-chats-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .side-chats-head {

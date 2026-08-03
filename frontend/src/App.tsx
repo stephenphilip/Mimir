@@ -279,6 +279,24 @@ export default function App() {
     const convId = await ensureConversation();
     if (!convId) return;
 
+    // Upload attached files to the backend first so they are processed and stored
+    if (files.length > 0) {
+      try {
+        setIsGenerating(true);
+        setPipeline(["Uploading files..."]);
+        for (const attached of files) {
+          if (attached.file) {
+            await api.uploadFile(attached.file, activeWorkspaceId || undefined);
+          }
+        }
+      } catch (err) {
+        console.error("File upload failed:", err);
+        setStreamError("Failed to upload attached files. Make sure the backend is online.");
+        setIsGenerating(false);
+        return;
+      }
+    }
+
     const RESEARCH_MARKER = "[[RESEARCH_MODE]]";
     const RESEARCH_INSTRUCTION = [
       "Research Mode: Focus entirely on researching and producing an evidence-backed, deeply structured answer.",

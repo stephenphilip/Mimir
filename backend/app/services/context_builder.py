@@ -46,7 +46,7 @@ class ContextBuilder(IContextBuilder):
                     continue
 
                 # Resolve physical disk path
-                uploads_dir = get_paths().workspace_dir / ".mimir" / "uploads"
+                uploads_dir = get_paths().data_dir / "uploads"
                 disk_matches = list(uploads_dir.glob(f"{row.id}_*"))
                 disk_path = disk_matches[0] if disk_matches else None
                 
@@ -245,7 +245,13 @@ class ContextBuilder(IContextBuilder):
         system_builder.add_section(PromptSection.CORE_IDENTITY, core_identity)
         system_builder.add_section(PromptSection.CAPABILITIES, caps)
         system_builder.add_section(PromptSection.CRITICAL_RULES, rules)
-        system_builder.add_section(PromptSection.USER_PROFILE, entity_mem.format_for_prompt(), title="Retrieved user memories & profile facts")
+        
+        vision_ctx = context.execution_metadata.get("vision_context")
+        profile_content = entity_mem.format_for_prompt()
+        if vision_ctx:
+            profile_content = f"=== VISION ANALYSIS (UPLOADED FILE) ===\n{vision_ctx}\n\n{profile_content}"
+            
+        system_builder.add_section(PromptSection.USER_PROFILE, profile_content, title="Retrieved user memories & profile facts")
         if hasattr(context, "working_memory") and context.working_memory:
             system_builder.add_section(PromptSection.WORKING_MEMORY, context.working_memory.format_for_prompt(), title="Working Memory (Current Task State)")
         system_builder.add_section(PromptSection.EPISODIC_MEMORY, episodic_mem.format_for_prompt(), title="Past Session Summaries")

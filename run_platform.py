@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 import subprocess
@@ -231,6 +233,35 @@ def resolve_python(root_dir: Path, backend_dir: Path) -> Path:
     return candidates[0]
 
 
+def _get_npm_command() -> list[str]:
+    """Resolve the working npm command, using the built-in npm-cli.js if the global npm is broken."""
+    default_cmd = ["npm"]
+    try:
+        res = subprocess.run(
+            ["npm", "--version"],
+            capture_output=True,
+            text=True,
+            shell=(sys.platform == "win32"),
+            timeout=5
+        )
+        if res.returncode == 0 and "TypeError" not in res.stderr and "TypeError" not in res.stdout:
+            return default_cmd
+    except Exception:
+        pass
+
+    node_exe = shutil.which("node")
+    if node_exe:
+        node_dir = Path(node_exe).parent
+        candidates = [
+            node_dir / "node_modules" / "npm" / "bin" / "npm-cli.js",
+            node_dir.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        ]
+        for path in candidates:
+            if path.exists():
+                return [str(node_exe), str(path)]
+    return default_cmd
+
+
 def ensure_frontend_deps(frontend_dir: Path) -> None:
     """Install npm packages if node_modules/vite is missing."""
     vite_bin = frontend_dir / "node_modules" / "vite" / "bin" / "vite.js"
@@ -239,10 +270,11 @@ def ensure_frontend_deps(frontend_dir: Path) -> None:
         return
 
     print("Frontend dependencies missing. Running npm install ...")
+    npm_cmd = _get_npm_command()
     result = subprocess.run(
-        ["npm", "install"],
+        npm_cmd + ["install"],
         cwd=str(frontend_dir),
-        shell=(sys.platform == "win32"),
+        shell=(sys.platform == "win32" and len(npm_cmd) == 1),
     )
     if result.returncode != 0:
         print("Error: npm install failed. Fix the npm errors above, then retry.")
@@ -298,10 +330,11 @@ def main():
     time.sleep(2)
 
     print("[2/2] Starting Vite Frontend on http://localhost:5173 ...")
+    npm_cmd = _get_npm_command()
     frontend_proc = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
+        npm_cmd + ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
         cwd=str(frontend_dir),
-        shell=(sys.platform == "win32"),
+        shell=(sys.platform == "win32" and len(npm_cmd) == 1),
     )
 
     # Give Vite a moment; surface early failures instead of a fake success banner

@@ -39,6 +39,7 @@ interface Props {
   onShareChat: (id: string) => void;
   onMoveChatToProject: (chatId: string, projectId: string | null) => void;
   onStartGroup: (id: string) => void;
+  developerToolsEnabled?: boolean;
 }
 
 export function Sidebar({
@@ -63,6 +64,7 @@ export function Sidebar({
   onShareChat,
   onMoveChatToProject,
   onStartGroup,
+  developerToolsEnabled = false,
 }: Props) {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const q = search.trim().toLowerCase();
@@ -113,15 +115,17 @@ export function Sidebar({
           <FolderOpen size={16} aria-hidden="true" />
           <span>Files</span>
         </button>
-        <button
-          type="button"
-          className={`side-nav-item ${view === "runtime" ? "is-active" : ""}`}
-          onClick={() => onNavigate("runtime")}
-          aria-current={view === "runtime" ? "page" : undefined}
-        >
-          <Activity size={16} aria-hidden="true" />
-          <span>Runtime</span>
-        </button>
+        {developerToolsEnabled && (
+          <button
+            type="button"
+            className={`side-nav-item ${view === "runtime" ? "is-active" : ""}`}
+            onClick={() => onNavigate("runtime")}
+            aria-current={view === "runtime" ? "page" : undefined}
+          >
+            <Activity size={16} aria-hidden="true" />
+            <span>Runtime</span>
+          </button>
+        )}
         <button
           type="button"
           className={`side-nav-item ${view === "marketplace" ? "is-active" : ""}`}

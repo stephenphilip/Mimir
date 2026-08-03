@@ -630,6 +630,9 @@ export default function App() {
       .then(() => {
         setSettingsSaveMessage("Saved ✓");
         setSettingsSaved(true);
+        if (!developerToolsEnabled && view === "runtime") {
+          setView("chats");
+        }
         setTimeout(() => { setSettingsSaveMessage(null); setSettingsSaved(false); }, 3000);
       })
       .catch((err) => {
@@ -655,6 +658,7 @@ export default function App() {
       <Sidebar
         view={view}
         onNavigate={setView}
+        developerToolsEnabled={developerToolsEnabled}
         conversations={displayConversations}
         activeConvId={activeConvId}
         onSelectChat={(id) => {

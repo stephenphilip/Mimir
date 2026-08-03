@@ -23,12 +23,20 @@ class AgentRuntime:
         self.runtime_coordinator = runtime_coordinator
         self.conversation_repo = conversation_repo
 
-    def process_prompt(self, conversation_id: str, prompt: str) -> Generator[str, None, None]:
+    def process_prompt(
+        self,
+        conversation_id: str,
+        prompt: str,
+        workspace_id: str = None,
+        **kwargs
+    ) -> Generator[str, None, None]:
         session_id = self.runtime_coordinator.begin_session(conversation_id)
         
         try:
             context = ExecutionContext(prompt=prompt)
             context.execution_status = "running"
+            if workspace_id:
+                context.execution_metadata["workspace_id"] = workspace_id
             
             # 1. Load or initialize conversation
             conv = self.conversation_repo.get_by_id(conversation_id)

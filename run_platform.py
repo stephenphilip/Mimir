@@ -154,18 +154,26 @@ def _start_ollama_service() -> None:
     except Exception:
         pass
 
-    print("  Starting Ollama server ...")
+    ollama_exe = shutil.which("ollama")
+    if not ollama_exe and sys.platform == "win32":
+        local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+        if local_app.exists():
+            ollama_exe = str(local_app)
+    if not ollama_exe:
+        ollama_exe = "ollama"
+
+    print(f"  Starting Ollama server ({ollama_exe}) ...")
     if sys.platform == "win32":
         # Ollama on Windows self-daemonises when invoked without a subcommand
         subprocess.Popen(
-            ["ollama", "serve"],
+            [ollama_exe, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     else:
         subprocess.Popen(
-            ["ollama", "serve"],
+            [ollama_exe, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,

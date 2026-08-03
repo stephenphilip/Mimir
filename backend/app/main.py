@@ -276,13 +276,6 @@ def chat(req: ChatRequest):
     from .repositories.sqlite_repositories import SQLiteConversationRepository
     conv_repo = SQLiteConversationRepository(db)
 
-    # Build creator engine for artifact generation
-    art_repo = SQLiteArtifactRepository(db)
-    creator_engine, _artifact_manager = build_creator_engine(art_repo)
-
-    # Full pipeline via factory (memory, agents, tool framework)
-    orchestrator = build_pipeline(db, paths, runtime, creator_engine=creator_engine)
-
     if not conv_repo.get_by_id(req.conversation_id):
         conv_repo.create(req.conversation_id, "New Chat", 1)
 

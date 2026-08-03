@@ -110,6 +110,15 @@ class ModelService(IModelService):
                 status="installed",
                 size=size,
             )
+            # Auto-clear or complete any downloads in the UI that are now verified to be installed
+            dl = self.model_repo.get_download(model_name)
+            if dl and dl.status != "completed":
+                self.model_repo.save_download(
+                    model_name=model_name,
+                    progress=100.0,
+                    status="completed",
+                    error=None,
+                )
 
     def unload_other_models(self, active_model: Optional[str] = None) -> None:
         """Unload non-active models. Skips work when only the active model is loaded."""

@@ -15,6 +15,54 @@ class ContextBuilder(IContextBuilder):
     def build_context(self, context: ExecutionContext) -> None:
         """Retrieve memory layers and build system/user prompts using PromptBuilder."""
         
+        # 1. Detect attached files and extract text / vision content
+        import re
+        from pathlib import Path
+        from config.paths import get_paths
+        from app.db import ManagedFile
+        from app.services.vision_service import VisionService
+
+        pattern = r"\[Attached file:\s*(.+?)\s*\(\d+(?:\.\d+)?\s*(?:B|KB|MB|GB),\s*type=(.+?)\)\.\s*File is attached in the UI;\s*use its name if generating related outputs\.\]"
+        matches = re.findall(pattern, context.prompt)
+
+        vision_contexts = []
+        db = None
+        if hasattr(self.memory_manager.setting_repo, "db"):
+            db = self.memory_manager.setting_repo.db
+
+        if db and matches:
+            for filename, file_type in matches:
+                # Find the file in ManagedFile table
+                row = db.query(ManagedFile).filter(ManagedFile.file_name == filename).order_by(ManagedFile.created_at.desc()).first()
+                if not row:
+                    continue
+                
+                # Resolve physical disk path
+                uploads_dir = get_paths().workspace_dir / ".mimir" / "uploads"
+                disk_matches = list(uploads_dir.glob(f"{row.id}_*"))
+                disk_path = disk_matches[0] if disk_matches else None
+                
+                if disk_path and disk_path.is_file():
+                    if file_type.lower() in ("pdf", "png", "jpg", "jpeg", "webp") or row.mime_type.startswith("image/"):
+                        try:
+                            # Run Vision Service analysis (which uses OCR/pypdf)
+                            vision_res = VisionService().analyze_file(str(disk_path), mime_type=row.mime_type)
+                            if vision_res.get("success") and vision_res.get("context"):
+                                vision_contexts.append(vision_res["context"])
+                        except Exception as e:
+                            print(f"Error analyzing attached file {filename}: {e}")
+                    else:
+                        # For text-like files, read directly
+                        try:
+                            file_content = disk_path.read_text(encoding="utf-8", errors="replace")
+                            text_ctx = f"--- Content of uploaded file: {filename} ---\n{file_content}\n--- End of file: {filename} ---"
+                            vision_contexts.append(text_ctx)
+                        except Exception as e:
+                            print(f"Error reading text of attached file {filename}: {e}")
+
+        if vision_contexts:
+            context.execution_metadata["vision_context"] = "\n\n".join(vision_contexts)
+
         # 1. Fetch memory layers
         user_id = 1 # Hardcoded for local MVP
         conv_id = context.conversation.get("id") if context.conversation else None

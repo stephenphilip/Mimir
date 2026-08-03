@@ -46,20 +46,46 @@ CONVERSATION:
             result_str = self.provider.generate(model=self.model, prompt=prompt, system_prompt="You are a data extraction system. Output strictly valid JSON.")
             
             # Clean up the output if model wrapped it in markdown
-            result_str = result_str.strip()
-            if result_str.startswith("```json"):
-                result_str = result_str[7:]
-            if result_str.startswith("```"):
-                result_str = result_str[3:]
-            if result_str.endswith("```"):
-                result_str = result_str[:-3]
+            content = result_str.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
                 
-            data = json.loads(result_str.strip())
-            if not isinstance(data, list):
-                if isinstance(data, dict) and "entities" in data:
-                    data = data["entities"]
+            # Robust brace-matching parser to extract JSON objects from any raw/truncated response
+            data = []
+            idx = 0
+            while True:
+                start = content.find('{', idx)
+                if start == -1:
+                    break
+                stack = 0
+                end = -1
+                for i in range(start, len(content)):
+                    if content[i] == '{':
+                        stack += 1
+                    elif content[i] == '}':
+                        stack -= 1
+                        if stack == 0:
+                            end = i
+                            break
+                if end != -1:
+                    substring = content[start:end+1]
+                    try:
+                        obj = json.loads(substring)
+                        if isinstance(obj, dict) and "entity_name" in obj:
+                            data.append(obj)
+                    except Exception:
+                        pass
+                    idx = start + 1
                 else:
-                    return None
+                    idx = start + 1
+            
+            if content and not data:
+                raise ValueError("Failed to parse any valid entities from LLM response")
             
             extracted = []
             for item in data:
@@ -82,4 +108,4 @@ CONVERSATION:
             
         except Exception as e:
             print(f"[EntityExtractorAgent] Failed to extract entities from conversation {conversation_id}: {e}")
-            return None
+            raise

@@ -79,8 +79,24 @@ def run_tests():
     from app.core.context import ExecutionContext
     
     from app.repositories.sqlite_repositories import SQLiteSettingRepository as SqliteSetRepo
+    from app.repositories.sqlite_repositories import SQLiteArtifactRepository as SqliteArtRepo
     setting_repo_local = SqliteSetRepo(db)
-    exec_tool = PythonTool(str(get_paths().workspace_dir), setting_repo=setting_repo_local)
+    artifact_repo_local = SqliteArtRepo(db)
+    
+    # Remove pre-existing test artifact to ensure new detection succeeds
+    import os
+    test_csv_path = get_paths().artifacts_dir / "test_run.csv"
+    if test_csv_path.exists():
+        try:
+            os.remove(test_csv_path)
+        except Exception:
+            pass
+
+    exec_tool = PythonTool(
+        artifact_repo=artifact_repo_local,
+        setting_repo=setting_repo_local,
+        workspace_dir=get_paths().workspace_dir
+    )
     
     code = """
 import pandas as pd

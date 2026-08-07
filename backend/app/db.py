@@ -55,6 +55,7 @@ class Message(Base):
     sender = Column(String)  # 'user' or 'assistant'
     content = Column(Text)
     tokens_count = Column(Integer, default=0)
+    is_pinned = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -350,6 +351,13 @@ def _migrate_schema(eng) -> None:
             for col, col_type in managed_file_cols.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE managed_files ADD COLUMN {col} {col_type}"))
+
+        msg_cols = {"is_pinned": "INTEGER DEFAULT 0"}
+        if "messages" in eng.dialect.get_table_names(conn):
+            existing = _columns("messages")
+            for col, col_type in msg_cols.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE messages ADD COLUMN {col} {col_type}"))
         conn.commit()
 
 

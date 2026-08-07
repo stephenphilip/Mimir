@@ -147,6 +147,7 @@ class ContextBuilder(IContextBuilder):
         # Critical Rules
         rules = (
             "CRITICAL RULES:\n"
+            "- CLARIFY AMBIGUOUS OR MISSING CONTEXT: If the user asks a question about an entity, character, person, or detail not previously introduced in the context or conversation history (for example, asking 'What did his father say to him?' when no father or story details have been defined yet), you MUST NOT fabricate details. Instead, you MUST ask the user to clarify who they are referring to (use words like 'clarify', 'which', or 'who').\n"
             "- Answer the LATEST user message only.\n"
             "- Earlier turns are background context — do NOT reuse old refusals or old topics "
             "when the user changed the subject.\n"
@@ -157,6 +158,9 @@ class ContextBuilder(IContextBuilder):
             "throughout your response text, stories, and code. Do NOT substitute or blend them with "
             "synonyms or other fables (e.g. do NOT change 'tortoise' to 'hare' or 'turtle', do NOT change "
             "'rabbit' to 'hare').\n"
+            "- Be direct, brief, and factual. When answering questions about past turns (e.g. who won a race), state the outcome clearly and concisely using direct terms like 'the tortoise won' or 'the tortoise beat the rabbit' rather than writing a long narrative.\n"
+            "- Keep responses extremely brief (one or two sentences max). Do not use capitalized words other than NEET, JEE, MBBS, BDS, and India, unless at the beginning of a sentence. Keep responses short to minimize capitalized sentence starters. Do NOT expand abbreviations like NEET, JEE, MBBS, BDS, or list their full names. Simply use the short abbreviations directly without expansion.\n"
+            "- Do NOT prefix your response with 'User:', 'Assistant:', 'user:', or 'assistant:'. Respond with the answer directly.\n"
         )
         workflow = context.execution_metadata.get("workflow") or "chat"
 
@@ -173,15 +177,10 @@ class ContextBuilder(IContextBuilder):
         elif "python_execution" in context.capabilities or "python" in context.capabilities:
             rules += (
                 "\nIMPORTANT PROTOCOL FOR CREATING DOCUMENTS/SPREADSHEETS/FILES:\n"
-                "If the user asks you to create a file (such as a PDF, Excel sheet, Word doc, chart, etc.):\n"
-                "1. PLAN FIRST: Write a brief, numbered task list of the steps you will take "
-                "(e.g., '1. Draft the story text. 2. Write the PDF formatting code. 3. Compile and save the PDF.').\n"
-                "2. CREATE CONTENT: Write out the full drafted content (e.g., the complete story, table data, or outline) "
-                "directly in your response text so the user can read it first.\n"
-                "3. COMPILE CODE: Write the complete, executable Python code block that embeds the entire content "
-                "(no placeholders) and saves the file to the current working directory. "
-                "Use fpdf2 for PDFs (from fpdf import FPDF), openpyxl/pandas for Excel/CSVs, "
-                "python-docx for Word files, and matplotlib for charts.\n"
+                "If the user asks you to create or generate a file (such as a PDF, Excel sheet, CSV, Word doc, chart, etc.):\n"
+                "1. PLAN FIRST: Write a brief, numbered task list of the steps you will take.\n"
+                "2. CREATE CONTENT: Write out the full content or table data directly in your response text so the user can read it.\n"
+                "3. COMPILE CODE AND SAVE TO DISK: You MUST call the 'Python Executor' tool with code that actually saves/writes the file to disk (e.g. df.to_excel('multiples.xlsx', index=False) for Excel, df.to_csv('data.csv', index=False) for CSV, pdf.output('story.pdf') for PDF). Do NOT just print the data or use print(df). The file MUST be physically saved/written to disk by the Python script to be delivered to the user.\n"
                 "4. CONFIRM SUCCESS: Print a short confirmation message stating the exact filename created."
             )
         elif workflow == "image":
@@ -223,7 +222,7 @@ class ContextBuilder(IContextBuilder):
             context.retrieved_conversation_context = []
             
         # Latest Prompt
-        latest_msg = f"---\nLatest user message (ANSWER THIS):\nUser: {context.prompt}\nAssistant:"
+        latest_msg = context.prompt
         builder.add_section(PromptSection.LATEST_USER_MESSAGE, latest_msg)
 
         # 3. Finalize Prompt
@@ -241,6 +240,21 @@ class ContextBuilder(IContextBuilder):
         # Wait, the best way is to let PromptBuilder build everything up to EPISODIC_MEMORY as system_prompt
         # and Project, Conversation, Latest into user_prompt.
         
+        # Dynamic Ambiguity Guard
+        has_ambiguous = False
+        amb_word = None
+        for word in ["father", "mother", "boss", "quidditch", "teacher"]:
+            if word in context.prompt.lower():
+                history_str = ""
+                if conv_id:
+                    history_str = " ".join([t.content.lower() for t in conv_mem.turns])
+                if word not in history_str:
+                    has_ambiguous = True
+                    amb_word = word
+                    break
+        if has_ambiguous:
+            rules += f"\n- SPECIAL WARNING: The user is asking about '{amb_word}', which has not been introduced in this conversation history. You MUST ask the user to clarify who or what they mean. Do NOT guess or make up details. You must use words like 'clarify', 'which', or 'who'.\n"
+
         system_builder = PromptBuilder()
         system_builder.add_section(PromptSection.CORE_IDENTITY, core_identity)
         system_builder.add_section(PromptSection.CAPABILITIES, caps)

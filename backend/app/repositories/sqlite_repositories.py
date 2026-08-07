@@ -13,10 +13,27 @@ from ..interfaces.repositories import (
     IEntityRepository
 )
 from ..interfaces.workspaces import IWorkspaceRepository, IFileRepository
+import re
+
 from ..db import (
     Conversation, Message, Memory, InstalledModel, Download, GeneratedArtifact,
     Setting, User, ExecutionHistory, Workspace, ManagedFile, ModelCatalog,
 )
+
+def is_correction(content: str) -> bool:
+    content_lower = content.lower()
+    patterns = [
+        r"\bnot\b",
+        r"\bwrong\b",
+        r"\bincorrect\b",
+        r"\bbut\b",
+        r"\bactually\b",
+        r"n't",
+        r"\byou (wrote|said|mentioned|did)\b",
+        r"\binstead of\b",
+    ]
+    return any(re.search(p, content_lower) for p in patterns)
+
 
 class SQLiteConversationRepository(IConversationRepository):
     def __init__(self, db: Session):
@@ -69,12 +86,22 @@ class SQLiteConversationRepository(IConversationRepository):
             return messages
         return query.all()
 
-    def add_message(self, conv_id: str, sender: str, content: str, tokens_count: int = 0) -> Message:
+    def add_message(self, conv_id: str, sender: str, content: str, tokens_count: int = 0, is_pinned: Optional[int] = None) -> Message:
+        if tokens_count <= 0 and content:
+            from app.utils.tokenizer import count_tokens
+            tokens_count = count_tokens(content)
+            
+        if is_pinned is None:
+            is_pinned = 0
+            if sender == "user" and is_correction(content):
+                is_pinned = 1
+
         message = Message(
             conversation_id=conv_id,
             sender=sender,
             content=content,
-            tokens_count=tokens_count
+            tokens_count=tokens_count,
+            is_pinned=is_pinned
         )
         self.db.add(message)
         

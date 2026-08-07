@@ -59,7 +59,12 @@ class AgentRuntime:
             context.user = {"id": user_message.conversation.user_id if user_message.conversation else 1}
             
             # 3. Route through Agents sequentially
+            # 3. Route through Agents sequentially
+            has_error = False
             for agent in self.agents:
+                if context.execution_status == "failed":
+                    has_error = True
+                    break
                 if agent.can_run(context):
                     for chunk in agent.run(context):
                         if isinstance(chunk, str):
@@ -67,8 +72,11 @@ class AgentRuntime:
                         elif isinstance(chunk, AgentResult):
                             if chunk.error:
                                 yield _sse({"type": "error", "message": f"Agent {chunk.agent_id} failed: {chunk.error}"})
+                                has_error = True
                             elif chunk.emit_event and chunk.status_message:
                                 yield _sse({"type": "status", "status": chunk.status_message})
+                    if has_error:
+                        break
             
             # 4. Update conversation title if needed
             conv = self.conversation_repo.get_by_id(conversation_id)
@@ -76,7 +84,8 @@ class AgentRuntime:
                 new_title = prompt[:30] + "..." if len(prompt) > 30 else prompt
                 self.conversation_repo.update_title(conversation_id, new_title)
 
-            yield _sse({"type": "done", "conversation_id": conversation_id})
+            if not has_error and context.execution_status != "failed":
+                yield _sse({"type": "done", "conversation_id": conversation_id})
             
         except Exception as e:
             yield _sse({

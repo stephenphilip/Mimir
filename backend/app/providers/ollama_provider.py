@@ -21,6 +21,7 @@ class OllamaProvider(IProvider):
                 # Bound runaway generations without cutting normal Excel/code replies
                 "num_predict": 3072,
                 "temperature": 0.35,
+                "num_ctx": 8192,
             },
         }
         if system_prompt:
@@ -59,7 +60,11 @@ class OllamaProvider(IProvider):
             "prompt": prompt,
             "stream": False,
             "keep_alive": "30m",
-            "options": {"num_predict": 3072, "temperature": 0.35},
+            "options": {
+                "num_predict": 3072,
+                "temperature": 0.35,
+                "num_ctx": 8192,
+            },
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -98,7 +103,11 @@ class OllamaProvider(IProvider):
             "stream": False,
             "format": "json",
             "keep_alive": "30m",
-            "options": {"num_predict": 1024, "temperature": 0.1},
+            "options": {
+                "num_predict": 1024,
+                "temperature": 0.1,
+                "num_ctx": 8192,
+            },
         }
         
         # Include schema in system prompt if provided

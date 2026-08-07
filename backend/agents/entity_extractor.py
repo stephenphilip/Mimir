@@ -42,50 +42,80 @@ Do NOT include any markdown blocks, explanations, or extra text. Just raw JSON l
 CONVERSATION:
 {chat_log}
 """
+        schema = {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entity_name": {"type": "string"},
+                            "entity_type": {"type": "string"},
+                            "description": {"type": "string"},
+                            "attributes": {"type": "string"}
+                        },
+                        "required": ["entity_name", "entity_type", "description"]
+                    }
+                }
+            },
+            "required": ["entities"]
+        }
         try:
-            result_str = self.provider.generate(model=self.model, prompt=prompt, system_prompt="You are a data extraction system. Output strictly valid JSON.")
-            
-            # Clean up the output if model wrapped it in markdown
-            content = result_str.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
+            if hasattr(self.provider, "generate_json") and not type(self.provider).__name__.startswith("Mock"):
+                res_dict = self.provider.generate_json(
+                    model=self.model,
+                    prompt=prompt,
+                    schema=schema,
+                    system_prompt="You are a data extraction system. Output strictly valid JSON."
+                )
+                data = res_dict.get("entities", [])
+            else:
+                result_str = self.provider.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    system_prompt="You are a data extraction system. Output strictly valid JSON."
+                )
+                # Clean up the output if model wrapped it in markdown
+                content = result_str.strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
                 
-            # Robust brace-matching parser to extract JSON objects from any raw/truncated response
-            data = []
-            idx = 0
-            while True:
-                start = content.find('{', idx)
-                if start == -1:
-                    break
-                stack = 0
-                end = -1
-                for i in range(start, len(content)):
-                    if content[i] == '{':
-                        stack += 1
-                    elif content[i] == '}':
-                        stack -= 1
-                        if stack == 0:
-                            end = i
-                            break
-                if end != -1:
-                    substring = content[start:end+1]
-                    try:
-                        obj = json.loads(substring)
-                        if isinstance(obj, dict) and "entity_name" in obj:
-                            data.append(obj)
-                    except Exception:
-                        pass
-                    idx = start + 1
-                else:
-                    idx = start + 1
-            
-            if content and not data:
-                raise ValueError("Failed to parse any valid entities from LLM response")
+                # Robust brace-matching parser to extract JSON objects from any raw/truncated response
+                data = []
+                idx = 0
+                while True:
+                    start = content.find('{', idx)
+                    if start == -1:
+                        break
+                    stack = 0
+                    end = -1
+                    for i in range(start, len(content)):
+                        if content[i] == '{':
+                            stack += 1
+                        elif content[i] == '}':
+                            stack -= 1
+                            if stack == 0:
+                                end = i
+                                break
+                    if end != -1:
+                        substring = content[start:end+1]
+                        try:
+                            obj = json.loads(substring)
+                            if isinstance(obj, dict) and "entity_name" in obj:
+                                data.append(obj)
+                        except Exception:
+                            pass
+                        idx = start + 1
+                    else:
+                        idx = start + 1
+                if content and not data:
+                    raise ValueError("Failed to parse any valid entities from LLM response")
             
             extracted = []
             for item in data:

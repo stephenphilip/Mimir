@@ -74,8 +74,8 @@ class ModelSelector(IModelSelector):
 
         tps_score = min(100.0, tps * 2.0)  # Map TPS (e.g. 50 tps) to a 0-100 score
 
-        # 3. Objective Utility combination (60% Quality, 40% Speed)
-        utility = (0.6 * quality) + (0.4 * tps_score)
+        # 3. Objective Utility combination (80% Quality, 20% Speed)
+        utility = (0.8 * quality) + (0.2 * tps_score)
 
         # 4. Local Readiness Premium (Bias to prevent heavy cold-start downloads)
         if is_installed:

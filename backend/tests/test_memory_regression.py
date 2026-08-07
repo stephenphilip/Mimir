@@ -278,6 +278,10 @@ def test_no_fabricated_entities_in_response(db_session):
     assert len(fabricated) < 5, f"Bug 4 Triggered: Hallucinated named entities found: {fabricated} in response: {response_text}"
 
 def test_ambiguous_question_does_not_hallucinate(db_session):
+    from sqlalchemy import text
+    db_session.execute(text("DELETE FROM messages WHERE conversation_id = :conv_id"), {"conv_id": "test_conv_b4_ambig"})
+    db_session.commit()
+    
     repo = SQLiteConversationRepository(db_session)
     conv_id = "test_conv_b4_ambig"
     

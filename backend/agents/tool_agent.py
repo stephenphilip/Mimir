@@ -27,33 +27,61 @@ class ToolAgent(IAgent):
         return bool(context.capabilities)
 
     def extract_tool_calls(self, text: str, context: ExecutionContext) -> list[Dict[str, Any]]:
-        """Extract JSON tool calls from markdown code blocks."""
-        pattern = r"```json\s*(.*?)\s*```"
-        matches = re.findall(pattern, text, re.DOTALL)
+        """Extract JSON tool calls from markdown code blocks, supporting unclosed blocks."""
         calls = []
-        for match in matches:
-            try:
-                data = json.loads(match)
-                if "tool" in data and "parameters" in data:
-                    calls.append(data)
-            except json.JSONDecodeError:
-                continue
-
-        # Fallback for models that ignore JSON instruction and output raw python
-        if not calls and "python_execution" in context.capabilities:
-            py_pattern = r"```python\s*(.*?)\s*```"
-            py_matches = re.findall(py_pattern, text, re.DOTALL)
-            for py_match in py_matches:
-                calls.append({
-                    "tool": "python_execution",
-                    "parameters": {"code": py_match.strip()}
-                })
+        
+        # 1. Parse JSON blocks (handles both closed and unclosed ```json blocks)
+        start_idx = 0
+        while True:
+            idx = text.find("```json", start_idx)
+            if idx == -1:
+                break
+            start_content = idx + 7
+            end_idx = text.find("```", start_content)
+            if end_idx == -1:
+                content = text[start_content:]
+                start_idx = len(text)
+            else:
+                content = text[start_content:end_idx]
+                start_idx = end_idx + 3
             
-            if not calls and ("import " in text or "print(" in text):
-                calls.append({
-                    "tool": "python_execution",
-                    "parameters": {"code": text.strip()}
-                })
+            content_str = content.strip()
+            if content_str:
+                # Heal triple quotes (both """ and ''') in JSON key-value pairs
+                triple_quote_pattern = r'("[a-zA-Z0-9_-]+")\s*:\s*(?:"""|\'\'\')(.*?)(?:"""|\'\'\')'
+                def replace_triple(match):
+                    key = match.group(1)
+                    content_val = match.group(2)
+                    escaped_content = content_val.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '')
+                    return f'{key}: "{escaped_content}"'
+                
+                healed_str = re.sub(triple_quote_pattern, replace_triple, content_str, flags=re.DOTALL)
+                
+                try:
+                    data = json.loads(healed_str)
+                    if isinstance(data, dict) and "tool" in data and "parameters" in data:
+                        calls.append(data)
+                except json.JSONDecodeError:
+                    pass
+
+        # 2. Fallback for raw python blocks
+        if not calls and "python_execution" in context.capabilities:
+            # If the model tried to output JSON, do NOT execute raw text as Python
+            if "```json" not in text:
+                py_pattern = r"```python\s*(.*?)\s*```"
+                py_matches = re.findall(py_pattern, text, re.DOTALL)
+                for py_match in py_matches:
+                    calls.append({
+                        "tool": "python_execution",
+                        "parameters": {"code": py_match.strip()}
+                    })
+                
+                if not calls and ("import " in text or "print(" in text):
+                    if not text.strip().startswith("{"):
+                        calls.append({
+                            "tool": "python_execution",
+                            "parameters": {"code": text.strip()}
+                        })
 
         return calls
 
@@ -62,6 +90,16 @@ class ToolAgent(IAgent):
         tool_calls = self.extract_tool_calls(assistant_response, context)
 
         if not tool_calls:
+            # Check if the plan required a tool execution that was not met
+            workflow = context.execution_metadata.get("workflow")
+            if workflow in ("python", "structured_document", "image"):
+                err_msg = f"Task failed: The model did not output a valid tool call to perform the requested '{workflow}' task."
+                context.errors.append(err_msg)
+                context.execution_status = "failed"
+                yield _sse({"type": "error", "message": err_msg})
+                yield AgentResult(agent_id=self.agent_id, error=err_msg)
+                return
+            
             context.execution_status = "completed"
             yield AgentResult(agent_id=self.agent_id, output=None, emit_event=False)
             return
@@ -72,7 +110,15 @@ class ToolAgent(IAgent):
 
             yield _sse({"type": "status", "status": f"Executing tool: {tool_name}..."})
 
-            tool_instance = self.tool_factory(tool_name)
+            # Resolve tool name (e.g. "Python Executor" or ID "python") to capability string
+            capability = tool_name
+            if hasattr(self.tool_registry, "list_all_tools"):
+                for t in self.tool_registry.list_all_tools():
+                    if t.get("name") == tool_name or t.get("id") == tool_name or t.get("capability") == tool_name:
+                        capability = t.get("capability")
+                        break
+
+            tool_instance = self.tool_factory(capability)
             if not tool_instance:
                 err_msg = f"Tool '{tool_name}' not registered or not enabled."
                 context.errors.append(err_msg)
@@ -89,7 +135,7 @@ class ToolAgent(IAgent):
                 result = {"success": False, "stdout": "", "stderr": str(e), "exit_code": -1, "artifacts": []}
                 
             # Log history if it's python_execution for backward compatibility
-            if tool_name == "python_execution":
+            if capability == "python_execution":
                 code = params.get("code", "")
                 self.artifact_repo.save_execution_history(
                     command="python script",
@@ -110,9 +156,22 @@ class ToolAgent(IAgent):
 
             if not result.get("success", False):
                 context.execution_status = "failed"
-                context.errors.append(result.get("stderr", "Tool execution failed"))
-            else:
-                context.execution_status = "completed"
+                err_msg = result.get("stderr") or "Tool execution failed"
+                context.errors.append(err_msg)
+                yield _sse({"type": "error", "message": err_msg})
+                yield AgentResult(agent_id=self.agent_id, error=err_msg)
+                return
+            
+            preferred_artifact = context.execution_metadata.get("preferred_artifact")
+            if preferred_artifact and not result.get("artifacts"):
+                err_msg = f"Task failed: The script executed but failed to save the generated file to disk. No '{preferred_artifact}' artifact was created."
+                context.errors.append(err_msg)
+                context.execution_status = "failed"
+                yield _sse({"type": "error", "message": err_msg})
+                yield AgentResult(agent_id=self.agent_id, error=err_msg)
+                return
+
+            context.execution_status = "completed"
 
         yield AgentResult(
             agent_id=self.agent_id,

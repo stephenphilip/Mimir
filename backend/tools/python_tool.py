@@ -38,7 +38,11 @@ class PythonTool(ITool):
 
     @classmethod
     def description(cls) -> str:
-        return "Execute arbitrary python code. Use this for data processing, math, fetching APIs, or any logic that can be expressed in Python."
+        return (
+            "Execute arbitrary python code. Use this for data processing, math, fetching APIs, or any logic. "
+            "IMPORTANT: If the user asks to create or generate a file (like Excel/spreadsheet, CSV, PDF, or image), your python script MUST write/save the file to the current directory (e.g. using df.to_excel('filename.xlsx'), df.to_csv('filename.csv'), or saving the image). "
+            "Do NOT just print the data or DataFrame; you MUST write/save the file to disk using Python."
+        )
 
     @classmethod
     def get_schema(cls) -> Dict[str, Any]:
@@ -72,8 +76,9 @@ class PythonTool(ITool):
 
         venv_python = self._resolve_python()
 
-        # Scan folder before run
-        files_before = set(os.listdir(self.artifacts_dir))
+        # Record execution start time to detect created/modified files
+        import time
+        start_time = time.time() - 2.0
         
         # Write temporary script file inside workspace
         temp_script_name = f"run_{uuid.uuid4().hex}.py"
@@ -113,9 +118,18 @@ class PythonTool(ITool):
                 except Exception:
                     pass
 
-        # Scan folder after run to detect newly created files
-        files_after = set(os.listdir(self.artifacts_dir))
-        new_files = files_after - files_before
+        # Scan folder after run to detect newly created or modified files
+        new_files = []
+        for file_name in os.listdir(self.artifacts_dir):
+            file_path = os.path.join(self.artifacts_dir, file_name)
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                mtime = os.path.getmtime(file_path)
+                if mtime >= start_time:
+                    new_files.append(file_name)
+            except Exception:
+                pass
         
         artifacts_records = []
         assistant_message_id = context.execution_metadata.get("assistant_message_id")

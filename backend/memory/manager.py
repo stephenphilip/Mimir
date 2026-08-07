@@ -113,5 +113,23 @@ class MemoryManager(IMemoryService):
         # A full RAG implementation would use ISemanticRepository
         return SemanticMemory([])
 
+    def compact_conversation(self, conversation_id: str) -> None:
+        """
+        Compacts the conversation history by deleting older neutral messages,
+        while ensuring that pinned messages are preserved.
+        """
+        messages = self.conversation_repo.get_messages(conversation_id)
+        if len(messages) <= 10:
+            return
+            
+        # Keep the latest 10 messages and any pinned messages. Delete the rest.
+        latest_ids = {m.id for m in messages[-10:]}
+        for msg in messages[:-10]:
+            is_pinned = getattr(msg, "is_pinned", 0)
+            if not is_pinned and msg.id not in latest_ids:
+                self.conversation_repo.db.delete(msg)
+                
+        self.conversation_repo.db.commit()
+
 # Export MemoryManager
 __all__ = ["MemoryManager"]

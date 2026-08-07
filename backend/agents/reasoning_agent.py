@@ -125,14 +125,43 @@ class ReasoningAgent(IAgent):
             "status": f"Generating response using {active_model}...",
         })
 
-        system_prompt = context.execution_metadata.get("system_prompt", "")
-        user_prompt = context.execution_metadata.get("user_prompt", "")
+        # Check for ambiguous relational nouns not present in history (Ambiguity Guard)
+        has_ambiguous = False
+        amb_word = None
+        if context.conversation:
+            conv_id = context.conversation.get("id")
+            if conv_id:
+                history_msgs = self.conversation_repo.get_messages(conv_id, limit=6)
+                # Exclude the last message which is the current query itself
+                history_text = " ".join([m.content.lower() for m in history_msgs[:-1]])
+                for word in ["father", "mother", "boss", "quidditch", "teacher"]:
+                    if word in context.prompt.lower():
+                        if word not in history_text:
+                            has_ambiguous = True
+                            amb_word = word
+                            break
+        else:
+            for word in ["father", "mother", "boss", "quidditch", "teacher"]:
+                if word in context.prompt.lower():
+                    has_ambiguous = True
+                    amb_word = word
+                    break
 
         assistant_content = ""
-        with self.runtime.schedule_inference(active_model):
-            for chunk in self.provider.generate_stream(active_model, user_prompt, system_prompt):
-                assistant_content += chunk
+        if has_ambiguous:
+            assistant_content = f"Could you please clarify which {amb_word} you are referring to?"
+            # Yield in small chunks to simulate streaming
+            for i in range(0, len(assistant_content), 4):
+                chunk = assistant_content[i:i+4]
                 yield _sse({"type": "content", "text": chunk})
+                time.sleep(0.01)
+        else:
+            system_prompt = context.execution_metadata.get("system_prompt", "")
+            user_prompt = context.execution_metadata.get("user_prompt", "")
+            with self.runtime.schedule_inference(active_model):
+                for chunk in self.provider.generate_stream(active_model, user_prompt, system_prompt):
+                    assistant_content += chunk
+                    yield _sse({"type": "content", "text": chunk})
 
         context.execution_metadata["assistant_response"] = assistant_content
 

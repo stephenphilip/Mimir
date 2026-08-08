@@ -37,6 +37,7 @@ def generate_pdf(title: str, content: str, output_dir: Optional[Path] = None) ->
     pdf.set_font("Helvetica", size=11)
     for line in content.splitlines():
         pdf.multi_cell(0, 6, _safe(line) if line else " ")
+        pdf.x = pdf.l_margin
     pdf.output(str(path))
 
     if not path.is_file() or path.stat().st_size == 0:

@@ -92,7 +92,65 @@ class ToolAgent(IAgent):
         if not tool_calls:
             # Check if the plan required a tool execution that was not met
             workflow = context.execution_metadata.get("workflow")
-            if workflow in ("python", "structured_document", "image"):
+            if workflow == "structured_document":
+                yield _sse({"type": "execution_status", "status": "generating"})
+                yield _sse({"type": "status", "status": "Rendering structured document..."})
+                
+                from app.intelligence.document_workflow import DocumentWorkflow
+                from app.creator.factory import build_creator_engine
+                creator_engine, _ = build_creator_engine(self.artifact_repo)
+                
+                doc_workflow = DocumentWorkflow(creator_engine=creator_engine)
+                artifact_type = context.execution_metadata.get("preferred_artifact") or "pdf"
+                
+                try:
+                    result = doc_workflow.execute(
+                        llm_content=assistant_response,
+                        user_prompt=context.prompt,
+                        artifact_type=artifact_type,
+                        workspace_id=context.execution_metadata.get("workspace_id"),
+                        message_id=context.execution_metadata.get("assistant_message_id"),
+                        original_prompt=context.prompt,
+                        execution_plan=context.execution_metadata.get("workflow_plan"),
+                    )
+                except Exception as e:
+                    result = {"success": False, "stdout": "", "stderr": str(e), "exit_code": 1, "artifacts": []}
+                
+                final_status = "completed" if result.get("success") else "failed"
+                yield _sse({"type": "execution_status", "status": final_status})
+                yield _sse({
+                    "type": "execution_result",
+                    "success": result.get("success", False),
+                    "stdout": result.get("stdout", ""),
+                    "stderr": result.get("stderr", ""),
+                    "exit_code": result.get("exit_code", 0),
+                    "artifacts": result.get("artifacts", []),
+                    "execution_status": final_status,
+                    "workflow": "structured_document",
+                })
+                
+                if not result.get("success", False):
+                    context.execution_status = "failed"
+                    err_msg = result.get("stderr") or "Document rendering failed"
+                    context.errors.append(err_msg)
+                    yield _sse({"type": "error", "message": err_msg})
+                    yield AgentResult(agent_id=self.agent_id, error=err_msg)
+                    return
+                
+                preferred_artifact = context.execution_metadata.get("preferred_artifact")
+                if preferred_artifact and not result.get("artifacts"):
+                    err_msg = f"Task failed: The document was rendered but failed to save the generated file to disk. No '{preferred_artifact}' artifact was created."
+                    context.errors.append(err_msg)
+                    context.execution_status = "failed"
+                    yield _sse({"type": "error", "message": err_msg})
+                    yield AgentResult(agent_id=self.agent_id, error=err_msg)
+                    return
+
+                context.execution_status = "completed"
+                yield AgentResult(agent_id=self.agent_id, output=None, emit_event=False)
+                return
+
+            if workflow in ("python", "image"):
                 err_msg = f"Task failed: The model did not output a valid tool call to perform the requested '{workflow}' task."
                 context.errors.append(err_msg)
                 context.execution_status = "failed"

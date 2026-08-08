@@ -62,9 +62,11 @@ class DocumentRenderer:
                 pdf.set_font("Helvetica", size=11)
                 for line in sec.body.splitlines() or [" "]:
                     pdf.multi_cell(0, 6, self._latin(line) if line else " ")
+                    pdf.x = pdf.l_margin
             for bullet in sec.bullets:
                 pdf.set_font("Helvetica", size=11)
                 pdf.multi_cell(0, 6, self._latin(f"- {bullet}"))
+                pdf.x = pdf.l_margin
             pdf.ln(3)
         pdf.output(str(path))
         if not path.is_file() or path.stat().st_size == 0:
